@@ -390,6 +390,37 @@ void RequestPacket_9() {
     packetType = 4;
 }
 
+
+//Функция запроса общих параметров (защита от антиспама)
+//10 73 55 20 0 [XX XX] FF FF 1C 0 0 0 0 0 A8 55 ) 
+void RequestPacket_9_pre() {
+    transmitt_byte[0] = 0x10; //длина пакета 16 байт
+    transmitt_byte[1] = 0x73;
+    transmitt_byte[2] = 0x55; //начало payload
+    transmitt_byte[3] = 0x20; //тип запроса
+    transmitt_byte[4] = 0x00; //
+    transmitt_byte[5] = (atoi(MeterAdressValue)) & 0xff; //младший байт адреса счётчика
+    transmitt_byte[6] = ((atoi(MeterAdressValue)) >> 8) & 0xff; //старший байт адреса счётчика
+    transmitt_byte[7] = 0xff; //
+    transmitt_byte[8] = 0xff; //
+    transmitt_byte[9] = 0x1C; //
+    transmitt_byte[10] = 0x00; //PIN
+    transmitt_byte[11] = 0x00; //PIN
+    transmitt_byte[12] = 0x00; //PIN
+    transmitt_byte[13] = 0x00; //PIN
+    transmitt_byte[14] = 0x00;
+    //вычисляем и добавляем байт crc
+    crc.restart();
+    crc.setPolynome(0xA9);
+    for (int i = 3; i < (transmitt_byte[0] - 1); i++)
+    {
+        crc.add(transmitt_byte[i]);
+    }
+    transmitt_byte[15] = crc.getCRC(); //CRC
+    transmitt_byte[16] = 0x55; //конец payload
+    packetType = 4;
+}
+
 void packetSender()  //функция отправки пакета
 {
     ELECHOUSE_cc1101.SpiStrobe(0x33);  //Calibrate frequency synthesizer and turn it off
@@ -411,6 +442,10 @@ void packetSender()  //функция отправки пакета
 }
 //функция приёма пакета (помещает его в resultbuffer[])
 void packetReceiver() {
+    for (int i=0; i < 61; i++){
+      resultbuffer[i]=0x00;
+    }
+    
     tmr.start();
     int PackCount = 0; //счётчик принятых из эфира пакетов
     bytecount = 0; //указатель байтов в результирующем буфере
@@ -490,6 +525,8 @@ void packetReceiver() {
 }
 
 void packetParser_7() {
+  if ( (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[6]==(atoi(MeterAdressValue) & 0xff)) and (resultbuffer[7]==((atoi(MeterAdressValue) >> 8) & 0xff)) and (resultbuffer[8]==0x2B) and (resultbuffer[12]==0x0) )
+  {
     Serial.print("Freq:  ");
     Serial.println(float((resultbuffer[24] | (resultbuffer[25] << 8)))/100);
 
@@ -513,8 +550,13 @@ void packetParser_7() {
 
     Serial.print("I3  ");
     Serial.println(float(resultbuffer[40] | (resultbuffer[41] << 8) | (resultbuffer[42] << 16)) / 1000);
+  }else{
+    Serial.println("PARSING ERROR!");
+  }
 }
 void packetParser_7_mqtt() {
+  if ( (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[6]==(atoi(MeterAdressValue) & 0xff)) and (resultbuffer[7]==((atoi(MeterAdressValue) >> 8) & 0xff)) and (resultbuffer[8]==0x2B) and (resultbuffer[12]==0x0) )
+  {
     mqttClient.publish("mirtek/Freq", String(float((resultbuffer[24] | (resultbuffer[25] << 8)))/100));
     mqttClient.publish("mirtek/Cos", String(float((resultbuffer[26] | (resultbuffer[27] << 8)))/100));
     mqttClient.publish("mirtek/V1", String(float((resultbuffer[28] | (resultbuffer[29] << 8)))/100));
@@ -523,9 +565,15 @@ void packetParser_7_mqtt() {
     mqttClient.publish("mirtek/I1", String(float(resultbuffer[34] | (resultbuffer[35] << 8) | (resultbuffer[36] << 16)) / 1000));
     mqttClient.publish("mirtek/I2", String(float(resultbuffer[37] | (resultbuffer[38] << 8) | (resultbuffer[39] << 16)) / 1000));
     mqttClient.publish("mirtek/I3", String(float(resultbuffer[40] | (resultbuffer[41] << 8) | (resultbuffer[42] << 16)) / 1000));
+  }else{
+    Serial.println("PARSING ERROR!");
+  }
 }
 
 void packetParser_5() {
+  //byte resultbuffer[61] = { 0 }
+  if ( (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[6]==(atoi(MeterAdressValue) & 0xff)) and (resultbuffer[7]==((atoi(MeterAdressValue) >> 8) & 0xff)) and (resultbuffer[8]==0x5) and (resultbuffer[17]==0x1) and (resultbuffer[44]==0x55) )
+  {
     Serial.print("SUM:  ");
     Serial.println(float((resultbuffer[25] << 16) | (resultbuffer[24] << 8) | resultbuffer[23]) / 100);
 
@@ -533,13 +581,21 @@ void packetParser_5() {
     Serial.println(float((resultbuffer[29] << 16) | (resultbuffer[28] << 8) | resultbuffer[27]) / 100);
 
     Serial.print("T2:  ");
-    Serial.println(float((resultbuffer[33] << 16) | (resultbuffer[32] << 8) | resultbuffer[31]) / 100);
+    Serial.println(float((resultbuffer[33] << 16) | (resultbuffer[32] << 8) | resultbuffer[31]) / 100);   
+  }else{
+    Serial.println("PARSING ERROR!");
+  }
 }
 
 void packetParser_5_mqtt() {
+  if ( (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[6]==(atoi(MeterAdressValue) & 0xff)) and (resultbuffer[7]==((atoi(MeterAdressValue) >> 8) & 0xff)) and (resultbuffer[8]==0x5) and (resultbuffer[17]==0x1) and (resultbuffer[44]==0x55) )
+  {
     mqttClient.publish("mirtek/SUM", String(float((resultbuffer[25] << 16) | (resultbuffer[24] << 8) | resultbuffer[23]) / 100, 2));
     mqttClient.publish("mirtek/T1", String(float((resultbuffer[29] << 16) | (resultbuffer[28] << 8) | resultbuffer[27]) / 100, 2));
     mqttClient.publish("mirtek/T2", String(float((resultbuffer[33] << 16) | (resultbuffer[32] << 8) | resultbuffer[31]) / 100, 2));
+  }else{
+    Serial.println("PARSING ERROR!");
+  }
 }
 
 void setup() {
@@ -645,6 +701,8 @@ void loop() {
             break;
         case 9:
             Serial.println("9 reseived from serial - experimental");
+            RequestPacket_9_pre();
+            delay(5000);
             RequestPacket_9();
             break;
         }
@@ -707,7 +765,9 @@ void loop() {
         packetReceiver(); //принимаем и склеиваем пакет
         packetParser_5();
         packetParser_5_mqtt();
-        delay(1000);
+        delay(5000);
+        RequestPacket_9_pre();
+        delay(5000);
         RequestPacket_9();
         packetSender(); //отправляем пакет
         packetReceiver(); //принимаем и склеиваем пакет
@@ -844,6 +904,8 @@ void mqttMessageReceived(String& topic, String& payload)
         break;
     case 9:
         Serial.println("9 reseived from MQTT");
+        RequestPacket_9_pre();
+        delay(5000);
         RequestPacket_9();
         break;
         
