@@ -1,4 +1,3 @@
-﻿//https://github.com/LSatan/SmartRC-CC1101-Driver-Lib
 //by Little_S@tan
 //MQTT topics: "mirtek/Request_Status", "mirtek/action"
 
@@ -9,7 +8,7 @@
 #include "CRC8.h"
 #include "CRC.h"
 #include <TimerMs.h>
-
+const int tmr_mqtt_time=5*60*1000; //раз в 5 минут запрашиваем и отправляем информацию в mqtt
 //#include <cc1101_debug_service.h>
 
 //Настройки для CC1101 с форума (47 бит)
@@ -74,6 +73,8 @@ byte resultbuffer[61] = { 0 }; //буфер конечного, сшитого �
 int bytecount = 0; //указатель байтов в результирующем буфере
 char s[1]; //Промежуточная переменная для вывода в Serial
 TimerMs tmr(2000, 0, 0); //инициализируем таймер
+TimerMs tmr_mqtt(tmr_mqtt_time, 0, 0); //инициализируем таймер, отправляющий значения в MQTT
+
 int packetType = 0; //кол-во подпакетов в ответе - зависит от типа запроса (3 для запросов 1-4, 4 для запросов 5,6)
 
 // -- Initial name of the Thing. Used e.g. as SSID of the own Access Point.
@@ -360,6 +361,35 @@ void RequestPacket_8() {
     packetType = 4;
 }
 
+//Функция формирования 9 (Экспериментальная, по параметрам сети)
+void RequestPacket_9() {
+    transmitt_byte[0] = 0x10; //длина пакета 16 байт
+    transmitt_byte[1] = 0x73;
+    transmitt_byte[2] = 0x55; //начало payload
+    transmitt_byte[3] = 0x21; //тип запроса
+    transmitt_byte[4] = 0x00; //
+    transmitt_byte[5] = (atoi(MeterAdressValue)) & 0xff; //младший байт адреса счётчика
+    transmitt_byte[6] = ((atoi(MeterAdressValue)) >> 8) & 0xff; //старший байт адреса счётчика
+    transmitt_byte[7] = 0xff; //
+    transmitt_byte[8] = 0xff; //
+    transmitt_byte[9] = 0x2b; //
+    transmitt_byte[10] = 0x00; //PIN
+    transmitt_byte[11] = 0x00; //PIN
+    transmitt_byte[12] = 0x00; //PIN
+    transmitt_byte[13] = 0x00; //PIN
+    transmitt_byte[14] = 0x00;
+    //вычисляем и добавляем байт crc
+    crc.restart();
+    crc.setPolynome(0xA9);
+    for (int i = 3; i < (transmitt_byte[0] - 1); i++)
+    {
+        crc.add(transmitt_byte[i]);
+    }
+    transmitt_byte[15] = crc.getCRC(); //CRC
+    transmitt_byte[16] = 0x55; //конец payload
+    packetType = 4;
+}
+
 void packetSender()  //функция отправки пакета
 {
     ELECHOUSE_cc1101.SpiStrobe(0x33);  //Calibrate frequency synthesizer and turn it off
@@ -481,9 +511,18 @@ void packetParser_7() {
     Serial.print("I2  ");
     Serial.println(float(resultbuffer[37] | (resultbuffer[38] << 8) | (resultbuffer[39] << 16)) / 1000);
 
-    Serial.print("I1  ");
+    Serial.print("I3  ");
     Serial.println(float(resultbuffer[40] | (resultbuffer[41] << 8) | (resultbuffer[42] << 16)) / 1000);
-
+}
+void packetParser_7_mqtt() {
+    mqttClient.publish("mirtek/Freq", String(float((resultbuffer[24] | (resultbuffer[25] << 8)))/100));
+    mqttClient.publish("mirtek/Cos", String(float((resultbuffer[26] | (resultbuffer[27] << 8)))/100));
+    mqttClient.publish("mirtek/V1", String(float((resultbuffer[28] | (resultbuffer[29] << 8)))/100));
+    mqttClient.publish("mirtek/V2", String(float((resultbuffer[30] | (resultbuffer[31] << 8)))/100));
+    mqttClient.publish("mirtek/V3", String(float((resultbuffer[32] | (resultbuffer[33] << 8)))/100));
+    mqttClient.publish("mirtek/I1", String(float(resultbuffer[34] | (resultbuffer[35] << 8) | (resultbuffer[36] << 16)) / 1000));
+    mqttClient.publish("mirtek/I2", String(float(resultbuffer[37] | (resultbuffer[38] << 8) | (resultbuffer[39] << 16)) / 1000));
+    mqttClient.publish("mirtek/I3", String(float(resultbuffer[40] | (resultbuffer[41] << 8) | (resultbuffer[42] << 16)) / 1000));
 }
 
 void packetParser_5() {
@@ -495,14 +534,11 @@ void packetParser_5() {
 
     Serial.print("T2:  ");
     Serial.println(float((resultbuffer[33] << 16) | (resultbuffer[32] << 8) | resultbuffer[31]) / 100);
-
 }
 
 void packetParser_5_mqtt() {
     mqttClient.publish("mirtek/SUM", String(float((resultbuffer[25] << 16) | (resultbuffer[24] << 8) | resultbuffer[23]) / 100, 2));
-
     mqttClient.publish("mirtek/T1", String(float((resultbuffer[29] << 16) | (resultbuffer[28] << 8) | resultbuffer[27]) / 100, 2));
-
     mqttClient.publish("mirtek/T2", String(float((resultbuffer[33] << 16) | (resultbuffer[32] << 8) | resultbuffer[31]) / 100, 2));
 }
 
@@ -559,6 +595,7 @@ void setup() {
     ELECHOUSE_cc1101.SpiStrobe(0x34);  // Enable RX
 
     //Serial.println("Rx Mode");
+    tmr_mqtt.start(); //старт таймера MQTT
 }
 
 
@@ -606,6 +643,10 @@ void loop() {
             Serial.println("8 reseived from serial");
             RequestPacket_8();
             break;
+        case 9:
+            Serial.println("9 reseived from serial - experimental");
+            RequestPacket_9();
+            break;
         }
         packetSender(); //отправляем пакет
         packetReceiver(); //принимаем и склеиваем пакет
@@ -632,6 +673,9 @@ void loop() {
         case 7:
             packetParser_7();
             break;
+        case 9:
+            packetParser_7();
+            break;
         }
     }  
     if (needMqttConnect)
@@ -654,7 +698,23 @@ void loop() {
         ESP.restart();
     }
 
-
+  if ((iotWebConf.getState() == iotwebconf::OnLine) && (mqttClient.connected())){
+    if (tmr_mqtt.tick()) // Запрос информации по таймеру и отправка в MQTT
+      {
+        Serial.println("Request MIRTEK by timer");
+        RequestPacket_5();
+        packetSender(); //отправляем пакет
+        packetReceiver(); //принимаем и склеиваем пакет
+        packetParser_5();
+        packetParser_5_mqtt();
+        delay(1000);
+        RequestPacket_9();
+        packetSender(); //отправляем пакет
+        packetReceiver(); //принимаем и склеиваем пакет
+        packetParser_7();
+        packetParser_7_mqtt();
+      }
+    }
     //delay(2000);
 }
 
@@ -782,6 +842,11 @@ void mqttMessageReceived(String& topic, String& payload)
         Serial.println("8 reseived from MQTT");
         RequestPacket_8();
         break;
+    case 9:
+        Serial.println("9 reseived from MQTT");
+        RequestPacket_9();
+        break;
+        
     }
 
     for (int k = 0; k < 3; k++) {  //Пробуем 5 раз сделать запросы и получить ответы
@@ -811,6 +876,9 @@ void mqttMessageReceived(String& topic, String& payload)
                 break;
             case 7:
                 //packetParser_7();
+                break;
+            case 9:
+                packetParser_7_mqtt();
                 break;
             }
             Request_Status = 1;
