@@ -181,6 +181,11 @@ char mqttUserNameValue[STRING_LEN];
 char mqttUserPasswordValue[STRING_LEN];
 char MeterAdressValue[NUMBER_LEN];
 
+float sum;
+float t1; 
+float t2;
+float cons;
+
 IotWebConf iotWebConf(thingName, &dnsServer, &server, wifiInitialApPassword, CONFIG_VERSION);
 // -- You can also use namespace formats e.g.: iotwebconf::ParameterGroup
 IotWebConfParameterGroup mqttGroup = IotWebConfParameterGroup("mqtt", "MQTT configuration");
@@ -420,7 +425,8 @@ void packetParser_7() {
   {
     Serial.print("A:  ");
 	Serial.print(resultbuffer[20], HEX); Serial.print(resultbuffer[19], HEX); Serial.print(resultbuffer[18], HEX); Serial.print("  ");
-    Serial.println(float((resultbuffer[18] | (resultbuffer[19] << 8) | (resultbuffer[20] << 16))));
+    cons = float((resultbuffer[18] | (resultbuffer[19] << 8) | (resultbuffer[20] << 16)));
+	Serial.println(cons);
 
     Serial.print("R:  ");
 	Serial.print(resultbuffer[23], HEX); Serial.print(resultbuffer[22], HEX); Serial.print(resultbuffer[21], HEX); Serial.print("  ");
@@ -482,15 +488,18 @@ void packetParser_5() {
   {
     Serial.print("SUM:  ");
 	Serial.print(resultbuffer[26], HEX); Serial.print(resultbuffer[25], HEX); Serial.print(resultbuffer[24], HEX); Serial.print(resultbuffer[23], HEX); Serial.print("  ");
-    Serial.println(float((resultbuffer[25] << 16) | (resultbuffer[24] << 8) | resultbuffer[23]) / 100);
+    sum = float((resultbuffer[25] << 16) | (resultbuffer[24] << 8) | resultbuffer[23]) * 10;
+	Serial.println(sum / 1000);
 
     Serial.print("T1:  ");
 	Serial.print(resultbuffer[30], HEX); Serial.print(resultbuffer[29], HEX); Serial.print(resultbuffer[28], HEX); Serial.print(resultbuffer[27], HEX); Serial.print("  ");
-    Serial.println(float((resultbuffer[29] << 16) | (resultbuffer[28] << 8) | resultbuffer[27]) / 100);
+    t1  = float((resultbuffer[29] << 16) | (resultbuffer[28] << 8) | resultbuffer[27]) * 10;
+    Serial.println(t1 / 1000);
 
     Serial.print("T2:  ");
 	Serial.print(resultbuffer[34], HEX); Serial.print(resultbuffer[33], HEX); Serial.print(resultbuffer[32], HEX); Serial.print(resultbuffer[31], HEX); Serial.print("  ");
-    Serial.println(float((resultbuffer[33] << 16) | (resultbuffer[32] << 8) | resultbuffer[31]) / 100);   
+    t2  = float((resultbuffer[33] << 16) | (resultbuffer[32] << 8) | resultbuffer[31]) * 10;
+    Serial.println(t2 / 1000);   
   }else{
     Serial.println("PARSING ERROR!");
   }
@@ -514,7 +523,7 @@ void packetParser_1() {
 
 
 
-void domoticzPublish(unsigned idx, float t1, float t2, unsigned cons ){
+void domoticzPublish(unsigned idx, float t1, float t2, float cons ){
 // domoticz
 // https://www.domoticz.com/wiki/Domoticz_API/JSON_URL%27s#Electricity_P1_smart_meter
 // idx=IDX&nvalue=0&svalue=USAGE1;USAGE2;RETURN1;RETURN2;CONS;PROD
@@ -530,18 +539,17 @@ void domoticzPublish(unsigned idx, float t1, float t2, unsigned cons ){
 //  JsonObject obj = doc.as<JsonObject>();
 
   char buffer[128];
-  sprintf(buffer, "{\"idx\": %d, \"nvalue\": 0, \"svalue\":\"%d;%d; 0.0;0.0; %d;0\"}", idx, unsigned(t1), unsigned(t2), cons );
+  sprintf(buffer, "{\"idx\": %d, \"nvalue\": 0, \"svalue\":\"%d;%d; 0.0;0.0; %d;0\"}", idx, unsigned(t1), unsigned(t2), unsigned(cons) );
   Serial.print("Domotics: "); Serial.println(buffer);
-  mqttClient.publish("domoticz/in1", buffer);
+  mqttClient.publish("domoticz/in", buffer);
 }
 
 void packetParser_5_mqtt() {
   if ( (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[6]==(atoi(MeterAdressValue) & 0xff)) and (resultbuffer[7]==((atoi(MeterAdressValue) >> 8) & 0xff)) and (resultbuffer[8]==0x5) and (resultbuffer[17]==0x1) and (resultbuffer[44]==0x55) )
   {
-    float sum = float((resultbuffer[25] << 16) | (resultbuffer[24] << 8) | resultbuffer[23]) * 10;
-    float t1  = float((resultbuffer[29] << 16) | (resultbuffer[28] << 8) | resultbuffer[27]) * 10;
-    float t2  = float((resultbuffer[33] << 16) | (resultbuffer[32] << 8) | resultbuffer[31]) * 10;
-    domoticzPublish(302, t1, t2, 0);
+//    sum = float((resultbuffer[25] << 16) | (resultbuffer[24] << 8) | resultbuffer[23]) * 10;
+//    t1  = float((resultbuffer[29] << 16) | (resultbuffer[28] << 8) | resultbuffer[27]) * 10;
+//    t2  = float((resultbuffer[33] << 16) | (resultbuffer[32] << 8) | resultbuffer[31]) * 10;
 
 //    mqttClient.publish("mirtek/SUM", String(sum,2));
 //    mqttClient.publish("mirtek/T1", String(t1,2));
@@ -729,6 +737,7 @@ void loop() {
         packetSender(transmitt_byte);   //отправляем пакет
         packetReceiver(); //принимаем и склеиваем пакет
         packetParser_5();
+//        packetParser_5_mqtt();
 
 /*
 for(byte ii = 0; ii<10; ii++){
@@ -741,18 +750,13 @@ for(byte ii = 0; ii<10; ii++){
         delay(1000);
 }
 */		
-/*
-        delay(1000);
-		RequestPacket_9_pre();
-        packetSender(); //отправляем пакет
-        packetReceiver(); //принимаем и склеиваем пакет
-*/
-        
-//		RequestPacket_9();
         RequestPacket(transmitt_byte,MeterAdressValue, 0x2b, 0); 
         packetSender(transmitt_byte); //отправляем пакет
         packetReceiver(); //принимаем и склеиваем пакет
         packetParser_7();
+		
+	    domoticzPublish(302, t1, t2, cons);
+
 //        packetParser_7_mqtt();
         Serial.println("<---------------------Request MIRTEK by timer");Serial.println("");
       }
