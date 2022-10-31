@@ -267,13 +267,13 @@ void RequestPacket(byte tr[], char *addr ,byte code, byte type) {
 
 //Функция формирования 1-го (начального) пакета (date, time)
 void RequestPacket_1() {
-    RequestPacket(transmitt_byte,MeterAdressValue, 0x1C); 
+    RequestPacket(transmitt_byte1,MeterAdressValue, 0x1C); 
     packetType = 3;
 }
 
 //Функция формирования 2-го пакета
 void RequestPacket_2() {
-    RequestPacket(transmitt_byte,MeterAdressValue, 0x10); 
+    RequestPacket(transmitt_byte1,MeterAdressValue, 0x10); 
     packetType = 3;
 }
 
