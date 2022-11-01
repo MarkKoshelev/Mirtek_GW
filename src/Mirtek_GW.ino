@@ -185,6 +185,7 @@ float sum;
 float t1; 
 float t2;
 float cons;
+bool  cc1101_is_ready;
 
 IotWebConf iotWebConf(thingName, &dnsServer, &server, wifiInitialApPassword, CONFIG_VERSION);
 // -- You can also use namespace formats e.g.: iotwebconf::ParameterGroup
@@ -626,8 +627,11 @@ void setup() {
 	
 #else
         ELECHOUSE_cc1101.setGDO0(gdo0);
-    if (ELECHOUSE_cc1101.getCC1101()) {     // Check the CC1101 Spi connection.
-        Serial.println("CC1101 Connection OK");
+        unsigned s = ELECHOUSE_cc1101.SpiReadStatus(0x31);
+    
+    if (s < 0 && s < 255) {     // Check the CC1101 Spi connection.
+        Serial.print("CC1101 Connection OK"); Serial.print("CC1101 Status: "); Serial.println(s);
+        cc1101_is_ready = true;
     //Инициализируем cc1101
 		ELECHOUSE_cc1101.SpiStrobe(0x30);  //reset
     
@@ -674,7 +678,7 @@ void loop() {
         ESP.restart();
     }
 
-  if ((iotWebConf.getState() == iotwebconf::OnLine) && (mqttClient.connected())){
+  if ((cc1101_is_ready == true) && (iotWebConf.getState() == iotwebconf::OnLine) && (mqttClient.connected())){
     if (tmr_mqtt.tick()) // Запрос информации по таймеру и отправка в MQTT
       {
         Serial.println("--------------------->Request MIRTEK by timer");
