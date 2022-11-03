@@ -126,10 +126,17 @@ byte rfSettings[] = {
 #endif
 
 byte  myCRC = 0;
-float sum;
-float t1; 
-float t2;
-float cons;
+
+#define MAX_METERS 2
+struct {
+    unsigned MeterAdress;
+    unsigned DomoticzP1Idx;
+    float sum;
+    float t1; 
+    float t2;
+    float cons;
+} meter[MAX_METERS];
+
 bool  cc1101_is_ready;
 
 #if ESP8266
@@ -191,15 +198,10 @@ char mqttServerValue[STRING_LEN];
 char mqttUserNameValue[STRING_LEN];
 char mqttUserPasswordValue[STRING_LEN];
 
-#define MAX_METERS 2
 char MeterAdressValue1[NUMBER_LEN];
 char MeterAdressValue2[NUMBER_LEN];
 char DomoticzP1IdxValue1[NUMBER_LEN];
 char DomoticzP1IdxValue2[NUMBER_LEN];
-
-unsigned MeterAdress[MAX_METERS];
-unsigned DomoticzP1Idx[MAX_METERS];
-
 
 IotWebConf iotWebConf(thingName, &dnsServer, &server, wifiInitialApPassword, CONFIG_VERSION);
 
@@ -312,55 +314,55 @@ void RequestPacket(byte tr[], unsigned addr ,byte code, byte type) {
 
 //Функция формирования 1-го (начального) пакета (date, time)
 void RequestPacket_1() {
-    RequestPacket(transmitt_byte1,MeterAdress[0], 0x1C); 
+    RequestPacket(transmitt_byte1,meter[0].MeterAdress, 0x1C); 
     packetType = 3;
 }
 
 //Функция формирования 2-го пакета
 void RequestPacket_2() {
-    RequestPacket(transmitt_byte1,MeterAdress[0], 0x10); 
+    RequestPacket(transmitt_byte1,meter[0].MeterAdress, 0x10); 
     packetType = 3;
 }
 
 //Функция формирования 3-го пакета
 void RequestPacket_3() {
-    RequestPacket(transmitt_byte,MeterAdress[0], 0x28, 0x00); 
+    RequestPacket(transmitt_byte,meter[0].MeterAdress, 0x28, 0x00); 
     packetType = 3;
 }
 
 //Функция формирования 4-го пакета
 void RequestPacket_4() {
-    RequestPacket(transmitt_byte,MeterAdress[0], 0x28, 0x01); 
+    RequestPacket(transmitt_byte,meter[0].MeterAdress, 0x28, 0x01); 
     packetType = 3;
 }
 
 //Функция формирования 5-го пакета
 void RequestPacket_5() {
-    RequestPacket(transmitt_byte,MeterAdress[0], 0x05, 0x00); 
+    RequestPacket(transmitt_byte,meter[0].MeterAdress, 0x05, 0x00); 
     packetType = 4;
 }
 
 //Функция формирования 6-го пакета
 void RequestPacket_6() {
-  RequestPacket(transmitt_byte,MeterAdress[0], 0x0a, 0x01); 
+  RequestPacket(transmitt_byte,meter[0].MeterAdress, 0x0a, 0x01); 
   packetType = 4;
 }
 
 //Функция формирования 7-го пакета (Действующие значения напряжения, тока)
 void RequestPacket_7() {
-  RequestPacket(transmitt_byte,MeterAdress[0], 0x2a, 0x01); 
+  RequestPacket(transmitt_byte,meter[0].MeterAdress, 0x2a, 0x01); 
   packetType = 4;
 }
 
 //Функция формирования 8-го пакета (Aabs)
 void RequestPacket_8() {
-  RequestPacket(transmitt_byte,MeterAdress[0], 0x05, 0x04); 
+  RequestPacket(transmitt_byte,meter[0].MeterAdress, 0x05, 0x04); 
   packetType = 4;
 }
 
 //Функция формирования 9 (параметры сети)
 void RequestPacket_9() {
-  RequestPacket(transmitt_byte,MeterAdress[0], 0x2B, 0x00); 
+  RequestPacket(transmitt_byte,meter[0].MeterAdress, 0x2B, 0x00); 
   packetType = 4;
 }
 
@@ -390,11 +392,11 @@ void packetReceiver() {
             */
 
             //Get received Data and calculate length
-            int size= ELECHOUSE_cc1101.SpiReadReg(CC1101_RXFIFO);
-            Serial.println("ReceiveData1: "); Serial.println(size);
+            //int size= ELECHOUSE_cc1101.SpiReadReg(CC1101_RXFIFO);
+            // Serial.println("ReceiveData1: "); Serial.println(size);
             int len = ELECHOUSE_cc1101.ReceiveData(buffer);
             //buffer[len] = '\0';
-            Serial.println("ReceiveData2: "); Serial.println(len);
+            //Serial.println("ReceiveData2: "); Serial.println(len);
 
             
             //Print received in bytes format.
@@ -451,13 +453,13 @@ void packetReceiver() {
     //-----------------------------------------
 }
 
-void packetParser_7() {
+void packetParser_7(unsigned meterIdx) {
   if ( (bytecount == 45) and (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[8]==0x2B) and (resultbuffer[12]==0x0) )
   {
     Serial.print("A:  ");
 	Serial.print(resultbuffer[20], HEX); Serial.print(resultbuffer[19], HEX); Serial.print(resultbuffer[18], HEX); Serial.print("  ");
-    cons = float((resultbuffer[18] | (resultbuffer[19] << 8) | (resultbuffer[20] << 16)));
-	Serial.println(cons);
+    meter[meterIdx].cons = float((resultbuffer[18] | (resultbuffer[19] << 8) | (resultbuffer[20] << 16)));
+	Serial.println(meter[meterIdx].cons);
 
     Serial.print("R:  ");
 	Serial.print(resultbuffer[23], HEX); Serial.print(resultbuffer[22], HEX); Serial.print(resultbuffer[21], HEX); Serial.print("  ");
@@ -513,23 +515,23 @@ void packetParser_7_mqtt() {
   }
 }
 
-void packetParser_5() {
+void packetParser_5(unsigned meterIdx) {
   if ( (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[8]==0x5) and (resultbuffer[17]==0x1) and (resultbuffer[44]==0x55) )
   {
     Serial.print("SUM:  ");
 	Serial.print(resultbuffer[26], HEX); Serial.print(resultbuffer[25], HEX); Serial.print(resultbuffer[24], HEX); Serial.print(resultbuffer[23], HEX); Serial.print("  ");
-    sum = float((resultbuffer[25] << 16) | (resultbuffer[24] << 8) | resultbuffer[23]) * 10;
-	Serial.println(sum / 1000);
+    meter[meterIdx].sum = float((resultbuffer[25] << 16) | (resultbuffer[24] << 8) | resultbuffer[23]) * 10;
+	Serial.println(meter[meterIdx].sum / 1000);
 
     Serial.print("T1:  ");
 	Serial.print(resultbuffer[30], HEX); Serial.print(resultbuffer[29], HEX); Serial.print(resultbuffer[28], HEX); Serial.print(resultbuffer[27], HEX); Serial.print("  ");
-    t1  = float((resultbuffer[29] << 16) | (resultbuffer[28] << 8) | resultbuffer[27]) * 10;
-    Serial.println(t1 / 1000);
+    meter[meterIdx].t1  = float((resultbuffer[29] << 16) | (resultbuffer[28] << 8) | resultbuffer[27]) * 10;
+    Serial.println(meter[meterIdx].t1 / 1000);
 
     Serial.print("T2:  ");
 	Serial.print(resultbuffer[34], HEX); Serial.print(resultbuffer[33], HEX); Serial.print(resultbuffer[32], HEX); Serial.print(resultbuffer[31], HEX); Serial.print("  ");
-    t2  = float((resultbuffer[33] << 16) | (resultbuffer[32] << 8) | resultbuffer[31]) * 10;
-    Serial.println(t2 / 1000);   
+    meter[meterIdx].t2  = float((resultbuffer[33] << 16) | (resultbuffer[32] << 8) | resultbuffer[31]) * 10;
+    Serial.println(meter[meterIdx].t2 / 1000);   
   }else{
     Serial.println("PARSING ERROR!");
   }
@@ -551,7 +553,8 @@ void packetParser_1() {
   }
 }
 
-void domoticzP1Publish(unsigned idx, float t1, float t2, float cons ){
+void domoticzP1Publish(unsigned meterIdx ){
+//(unsigned idx, float t1, float t2, float cons
 // domoticz
 // https://www.domoticz.com/wiki/Domoticz_API/JSON_URL%27s#Electricity_P1_smart_meter
 // idx=IDX&nvalue=0&svalue=USAGE1;USAGE2;RETURN1;RETURN2;CONS;PROD
@@ -567,7 +570,8 @@ void domoticzP1Publish(unsigned idx, float t1, float t2, float cons ){
 //  JsonObject obj = doc.as<JsonObject>();
 
   char buffer[128];
-  sprintf(buffer, "{\"idx\": %d, \"nvalue\": 0, \"svalue\":\"%d;%d; 0.0;0.0; %d;0\"}", idx, unsigned(t1), unsigned(t2), unsigned(cons) );
+  sprintf(buffer, "{\"idx\": %d, \"nvalue\": 0, \"svalue\":\"%d;%d; 0.0;0.0; %d;0\"}",
+        meter[meterIdx].DomoticzP1Idx, unsigned(meter[meterIdx].t1), unsigned(meter[meterIdx].t2), unsigned(meter[meterIdx].cons) );
   Serial.print("Domotics: "); Serial.println(buffer);
   mqttClient.publish("domoticz/in", buffer);
 }
@@ -683,10 +687,10 @@ void setup() {
 		ELECHOUSE_cc1101.SpiStrobe(0x3A);  // Flush the RX FIFO buffer  CC1101_SFRX
 		ELECHOUSE_cc1101.SpiStrobe(0x3B);  // Flush the TX FIFO buffer  CC1101_SFTX
 		ELECHOUSE_cc1101.SpiStrobe(0x34);  // Enable RX                 CC1101_SRX
-        MeterAdress[0] = atoi(MeterAdressValue1); 
-        MeterAdress[1] = atoi(MeterAdressValue2);
-        DomoticzP1Idx[0] = atoi(DomoticzP1IdxValue1);
-        DomoticzP1Idx[1] = atoi(DomoticzP1IdxValue2);
+        meter[0].MeterAdress = atoi(MeterAdressValue1); 
+        meter[1].MeterAdress = atoi(MeterAdressValue2);
+        meter[0].DomoticzP1Idx = atoi(DomoticzP1IdxValue1);
+        meter[1].DomoticzP1Idx = atoi(DomoticzP1IdxValue2);
     }
     else {
         unsigned s = ELECHOUSE_cc1101.SpiReadStatus(0x31);
@@ -726,27 +730,27 @@ void loop() {
       {
         Serial.println("--------------------->Request MIRTEK by timer");
         for(int i = 0; i < MAX_METERS; i++) {
-            Serial.print("MeterAdress: "); Serial.println(MeterAdress[i]);
-            if(MeterAdress[i] != 0){
+            Serial.print("MeterAdress: "); Serial.println(meter[i].MeterAdress);
+            if(meter[i].MeterAdress != 0){
         	    packetType = 3;
                 // date time
-                RequestPacket(transmitt_byte1, MeterAdress[i], 0x1C);
+                RequestPacket(transmitt_byte1, meter[i].MeterAdress, 0x1C);
                 //packetSender(transmitt_byte1);
                 packetReceiver();
 		        packetParser_1();
                 // T1, T2
         	    packetType = 4;
-                RequestPacket(transmitt_byte, MeterAdress[i], 0x05, 0); 
+                RequestPacket(transmitt_byte, meter[i].MeterAdress, 0x05, 0); 
                 packetReceiver();
-                packetParser_5();
+                packetParser_5(i);
                 
                 // Consume Active Energy, Volts, Ampers
-                RequestPacket(transmitt_byte, MeterAdress[i], 0x2b, 0); 
+                RequestPacket(transmitt_byte, meter[i].MeterAdress, 0x2b, 0); 
                 packetReceiver();
-                packetParser_7();
+                packetParser_7(i);
 
-                if(DomoticzP1Idx[i] != 0 && mqttClient.connected() ){
-        	        domoticzP1Publish(DomoticzP1Idx[i], t1, t2, cons);
+                if(meter[i].DomoticzP1Idx != 0 && mqttClient.connected() ){
+        	        domoticzP1Publish(i);
                 }
             }
         }
