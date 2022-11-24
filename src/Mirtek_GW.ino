@@ -3,6 +3,7 @@
 //#define MY_CC1101
 // https://github.com/1technophile/OpenMQTTGateway/issues/329
 
+#include <math.h>
 #include <MQTT.h>
 #include <SPI.h>
 #include <IotWebConf.h>
@@ -12,6 +13,20 @@
 #include "CRC.h"
 #include <TimerMs.h>
 
+#define MY_DEBUG
+#ifdef MY_DEBUG
+#define DEBUG_LOG(msg, ...) MsgOutImpl(msg, ##__VA_ARGS__)
+void MsgOutImpl(const char* msg, ...)
+{
+    char buff[256];
+    va_list argptr;
+    va_start(argptr, msg);
+    vsnprintf(buff, sizeof(buff) , msg, argptr);
+    Serial.println(buff);
+}
+#else
+    #define DEBUG_LOG(msg, ...)
+#endif
 
 unsigned tmr_tele_time=30*1000; //раз в 10 cек запрашиваем и отправляем информацию в mqtt
 //#include <cc1101_debug_service.h>
@@ -129,9 +144,17 @@ byte rfSettings[] = {
 struct {
     unsigned MeterAdress;
     unsigned DomoticzP1Idx;
+    unsigned DomoticzAmpersIdx;
+    unsigned DomoticzVoltsIdx;
     float sum;
     float t1; 
     float t2;
+	float a1;
+	float a2;
+	float a3;
+	float v1;
+	float v2;
+	float v3;
     float cons;
 } meter[MAX_METERS];
 
@@ -166,9 +189,10 @@ const char wifiInitialApPassword[] = "12345678";
 
 #define STRING_LEN 128
 #define NUMBER_LEN 6
+#define FLOATSZ    16
 
 // -- Configuration specific key. The value should be modified if config structure was changed.
-#define CONFIG_VERSION "mirtek_gw_v7"
+#define CONFIG_VERSION "v2.1"
 
 // -- Status indicator pin.
 //      First it will light up (kept LOW), on Wifi connection it will blink,
@@ -207,10 +231,22 @@ char MeterAdressValue1[NUMBER_LEN];
 char MeterAdressValue2[NUMBER_LEN];
 char MeterAdressValue3[NUMBER_LEN];
 char MeterAdressValue4[NUMBER_LEN];
+
 char DomoticzP1IdxValue1[NUMBER_LEN];
 char DomoticzP1IdxValue2[NUMBER_LEN];
 char DomoticzP1IdxValue3[NUMBER_LEN];
 char DomoticzP1IdxValue4[NUMBER_LEN];
+
+char DomoticzAmpersIdxValue1[NUMBER_LEN];
+char DomoticzAmpersIdxValue2[NUMBER_LEN];
+char DomoticzAmpersIdxValue3[NUMBER_LEN];
+char DomoticzAmpersIdxValue4[NUMBER_LEN];
+
+char DomoticzVoltsIdxValue1[NUMBER_LEN];
+char DomoticzVoltsIdxValue2[NUMBER_LEN];
+char DomoticzVoltsIdxValue3[NUMBER_LEN];
+char DomoticzVoltsIdxValue4[NUMBER_LEN];
+
 
 IotWebConf iotWebConf(thingName, &dnsServer, &server, wifiInitialApPassword, CONFIG_VERSION);
 
@@ -226,18 +262,26 @@ IotWebConfPasswordParameter mqttUserPasswordParam = IotWebConfPasswordParameter(
 IotWebConfParameterGroup group1 = IotWebConfParameterGroup("group1", "Настройки Cчетчика 1");
 IotWebConfNumberParameter MeterAdress1 = IotWebConfNumberParameter("Адрес счётчика", "MeterAdress1", MeterAdressValue1, NUMBER_LEN, "0", "0..65534", "min='0' max='65534' step='1'");
 IotWebConfNumberParameter DomoticzP1Idx1 = IotWebConfNumberParameter("P1 Smart Meter Idx", "DomoticzP1Idx1", DomoticzP1IdxValue1, NUMBER_LEN, "0", "0..65534", "min='0' max='65534' step='1'");
+IotWebConfNumberParameter DomoticzAmpersIdx1 = IotWebConfNumberParameter("Ampers Idx", "DomoticzAmpersIdx1", DomoticzAmpersIdxValue1, NUMBER_LEN, "0", "0..65534", "min='0' max='65534' step='1'");
+IotWebConfNumberParameter DomoticzVoltsIdx1 = IotWebConfNumberParameter("Volts Idx", "DomoticzVoltsIdx1", DomoticzVoltsIdxValue1, NUMBER_LEN, "0", "0..65534", "min='0' max='65534' step='1'");
 
 IotWebConfParameterGroup group2 = IotWebConfParameterGroup("group2", "Настройки Cчетчика 2");
 IotWebConfNumberParameter MeterAdress2 = IotWebConfNumberParameter("Адрес счётчика", "MeterAdress2", MeterAdressValue2, NUMBER_LEN, "0", "0..65534", "min='0' max='65534' step='1'");
 IotWebConfNumberParameter DomoticzP1Idx2 = IotWebConfNumberParameter("P1 Smart Meter Idx", "DomoticzP1Idx2", DomoticzP1IdxValue2, NUMBER_LEN, "0", "0..65534", "min='0' max='65534' step='1'");
+IotWebConfNumberParameter DomoticzAmpersIdx2 = IotWebConfNumberParameter("Ampers Idx", "DomoticzAmpersIdx2", DomoticzAmpersIdxValue2, NUMBER_LEN, "0", "0..65534", "min='0' max='65534' step='1'");
+IotWebConfNumberParameter DomoticzVoltsIdx2 = IotWebConfNumberParameter("Volts Idx", "DomoticzVoltsIdx2", DomoticzVoltsIdxValue2, NUMBER_LEN, "0", "0..65534", "min='0' max='65534' step='1'");
 
 IotWebConfParameterGroup group3 = IotWebConfParameterGroup("group3", "Настройки Cчетчика 3");
 IotWebConfNumberParameter MeterAdress3 = IotWebConfNumberParameter("Адрес счётчика", "MeterAdress3", MeterAdressValue3, NUMBER_LEN, "0", "0..65534", "min='0' max='65534' step='1'");
 IotWebConfNumberParameter DomoticzP1Idx3 = IotWebConfNumberParameter("P1 Smart Meter Idx", "DomoticzP1Idx3", DomoticzP1IdxValue3, NUMBER_LEN, "0", "0..65534", "min='0' max='65534' step='1'");
+IotWebConfNumberParameter DomoticzAmpersIdx3 = IotWebConfNumberParameter("Ampers Idx", "DomoticzAmpersIdx3", DomoticzAmpersIdxValue3, NUMBER_LEN, "0", "0..65534", "min='0' max='65534' step='1'");
+IotWebConfNumberParameter DomoticzVoltsIdx3 = IotWebConfNumberParameter("Volts Idx", "DomoticzVoltsIdx3", DomoticzVoltsIdxValue3, NUMBER_LEN, "0", "0..65534", "min='0' max='65534' step='1'");
 
 IotWebConfParameterGroup group4 = IotWebConfParameterGroup("group4", "Настройки Cчетчика 4");
 IotWebConfNumberParameter MeterAdress4 = IotWebConfNumberParameter("Адрес счётчика", "MeterAdress4", MeterAdressValue4, NUMBER_LEN, "0", "0..65534", "min='0' max='65534' step='1'");
 IotWebConfNumberParameter DomoticzP1Idx4 = IotWebConfNumberParameter("P1 Smart Meter Idx", "DomoticzP1Idx4", DomoticzP1IdxValue4, NUMBER_LEN, "0", "0..65534", "min='0' max='65534' step='1'");
+IotWebConfNumberParameter DomoticzAmpersIdx4 = IotWebConfNumberParameter("Ampers Idx", "DomoticzAmpersIdx4", DomoticzAmpersIdxValue4, NUMBER_LEN, "0", "0..65534", "min='0' max='65534' step='1'");
+IotWebConfNumberParameter DomoticzVoltsIdx4 = IotWebConfNumberParameter("Volts Idx", "DomoticzVoltsIdx4", DomoticzVoltsIdxValue4, NUMBER_LEN, "0", "0..65534", "min='0' max='65534' step='1'");
 
 bool iotWebConfInit(){
     iotWebConf.addSystemParameter(&telePeriod); 
@@ -249,15 +293,23 @@ bool iotWebConfInit(){
 
     group1.addItem(&MeterAdress1);
     group1.addItem(&DomoticzP1Idx1);
+    group1.addItem(&DomoticzAmpersIdx1);
+    group1.addItem(&DomoticzVoltsIdx1);
     
     group2.addItem(&MeterAdress2);
     group2.addItem(&DomoticzP1Idx2);
+    group2.addItem(&DomoticzAmpersIdx2);
+    group2.addItem(&DomoticzVoltsIdx2);
 
     group3.addItem(&MeterAdress3);
     group3.addItem(&DomoticzP1Idx3);
+    group3.addItem(&DomoticzAmpersIdx3);
+    group3.addItem(&DomoticzVoltsIdx3);
 
     group4.addItem(&MeterAdress4);
     group4.addItem(&DomoticzP1Idx4);
+    group4.addItem(&DomoticzAmpersIdx4);
+    group4.addItem(&DomoticzVoltsIdx4);
 
     iotWebConf.setStatusPin(STATUS_PIN);
     //iotWebConf.setConfigPin(CONFIG_PIN);
@@ -271,7 +323,44 @@ bool iotWebConfInit(){
     iotWebConf.setWifiConnectionCallback(&wifiConnected);
 
     // -- Initializing the configuration.
-    return iotWebConf.init();
+    bool validConfig = iotWebConf.init(); 
+    Serial.print("Configuration: "); Serial.println(validConfig);
+    if (!validConfig)
+    {
+		Serial.println("Configuration is not valid!!! Update it!");
+        iotWebConf.saveConfig();
+/*
+        mqttServerValue[0] = '\0';
+        mqttUserNameValue[0] = '\0';
+        mqttUserPasswordValue[0] = '\0';
+
+        MeterAdressValue1[0] = '\0';
+        MeterAdressValue2[0] = '\0';
+        MeterAdressValue3[0] = '\0';
+        MeterAdressValue4[0] = '\0';
+
+        DomoticzP1IdxValue1 [0] = '\0';
+        DomoticzP1IdxValue2 [0] = '\0';
+        DomoticzP1IdxValue3 [0] = '\0';
+        DomoticzP1IdxValue4 [0] = '\0';
+
+        DomoticzAmpersIdxValue1 [0] = '\0';
+        DomoticzAmpersIdxValue2 [0] = '\0';
+        DomoticzAmpersIdxValue3 [0] = '\0';
+        DomoticzAmpersIdxValue4 [0] = '\0';
+
+        DomoticzVoltsIdxValue1 [0] = '\0';
+        DomoticzVoltsIdxValue2 [0] = '\0';
+        DomoticzVoltsIdxValue3 [0] = '\0';
+        DomoticzVoltsIdxValue4 [0] = '\0';
+*/
+    }
+
+    // -- Set up required URL handlers on the web server.
+    server.on("/", handleRoot);
+    server.on("/config", [] { iotWebConf.handleConfig(); });
+    server.onNotFound([]() { iotWebConf.handleNotFound(); });
+    return validConfig;
 }
 
 void packetSender(byte tr[])  //функция отправки пакета
@@ -355,62 +444,6 @@ void RequestPacket2(byte tr[], unsigned addr ,byte code, byte type) {
     packetSender(tr);   //отправляем пакет
     packetType = 4;
 }
-
-/*
-//Функция формирования 1-го (начального) пакета (date, time)
-void RequestPacket_1() {
-    RequestPacket(transmitt_byte1,meter[0].MeterAdress, 0x1C); 
-    packetType = 3;
-}
-
-//Функция формирования 2-го пакета
-void RequestPacket_2() {
-    RequestPacket(transmitt_byte1,meter[0].MeterAdress, 0x10); 
-    packetType = 3;
-}
-
-//Функция формирования 3-го пакета
-void RequestPacket_3() {
-    RequestPacket(transmitt_byte,meter[0].MeterAdress, 0x28, 0x00); 
-    packetType = 3;
-}
-
-//Функция формирования 4-го пакета
-void RequestPacket_4() {
-    RequestPacket(transmitt_byte,meter[0].MeterAdress, 0x28, 0x01); 
-    packetType = 3;
-}
-
-//Функция формирования 5-го пакета
-void RequestPacket_5() {
-    RequestPacket(transmitt_byte,meter[0].MeterAdress, 0x05, 0x00); 
-    packetType = 4;
-}
-
-//Функция формирования 6-го пакета
-void RequestPacket_6() {
-  RequestPacket(transmitt_byte,meter[0].MeterAdress, 0x0a, 0x01); 
-  packetType = 4;
-}
-
-//Функция формирования 7-го пакета (Действующие значения напряжения, тока)
-void RequestPacket_7() {
-  RequestPacket(transmitt_byte,meter[0].MeterAdress, 0x2a, 0x01); 
-  packetType = 4;
-}
-
-//Функция формирования 8-го пакета (Aabs)
-void RequestPacket_8() {
-  RequestPacket(transmitt_byte,meter[0].MeterAdress, 0x05, 0x04); 
-  packetType = 4;
-}
-
-//Функция формирования 9 (параметры сети)
-void RequestPacket_9() {
-  RequestPacket(transmitt_byte,meter[0].MeterAdress, 0x2B, 0x00); 
-  packetType = 4;
-}
-*/
 
 //функция приёма пакета (помещает его в resultbuffer[])
 bool packetReceiver() {
@@ -507,12 +540,12 @@ bool packetReceiver() {
 void packetParser_7(unsigned meterIdx) {
   if ( (bytecount == 45) and (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[8]==0x2B) and (resultbuffer[12]==0x0) )
   {
-    Serial.print("A:  ");
+    Serial.print("Active:  ");
 	Serial.print(resultbuffer[20], HEX); Serial.print(resultbuffer[19], HEX); Serial.print(resultbuffer[18], HEX); Serial.print("  ");
     meter[meterIdx].cons = float((resultbuffer[18] | (resultbuffer[19] << 8) | (resultbuffer[20] << 16)));
 	Serial.println(meter[meterIdx].cons);
 
-    Serial.print("R:  ");
+    Serial.print("Reactive:  ");
 	Serial.print(resultbuffer[23], HEX); Serial.print(resultbuffer[22], HEX); Serial.print(resultbuffer[21], HEX); Serial.print("  ");
     Serial.println(float((resultbuffer[21] | (resultbuffer[22] << 8) | (resultbuffer[23] << 16) )));
 
@@ -523,49 +556,38 @@ void packetParser_7(unsigned meterIdx) {
     Serial.println(float((resultbuffer[26] | (resultbuffer[27] << 8))) / 1000);
 
     Serial.print("V1:  ");
+	meter[meterIdx].v1 = float((resultbuffer[28] | (resultbuffer[29] << 8))) / 100;
 	Serial.print(resultbuffer[29], HEX); Serial.print(resultbuffer[28], HEX); Serial.print("  ");
-    Serial.println(float((resultbuffer[28] | (resultbuffer[29] << 8))) / 100);
+    Serial.println(meter[meterIdx].v1);
 
     Serial.print("V2:  ");
+	meter[meterIdx].v2 = float((resultbuffer[30] | (resultbuffer[31] << 8))) / 100;
 	Serial.print(resultbuffer[31], HEX); Serial.print(resultbuffer[30], HEX); Serial.print("  ");
-    Serial.println(float((resultbuffer[30] | (resultbuffer[31] << 8))) / 100);
+    Serial.println(meter[meterIdx].v2);
 
     Serial.print("V3:  ");
+	meter[meterIdx].v3 = float((resultbuffer[32] | (resultbuffer[33] << 8))) / 100;
 	Serial.print(resultbuffer[33], HEX); Serial.print(resultbuffer[32], HEX); Serial.print("  ");
-    Serial.println(float((resultbuffer[32] | (resultbuffer[33] << 8))) / 100);
+    Serial.println(meter[meterIdx].v3);
 
     Serial.print("I1  ");
+	meter[meterIdx].a1 = float(resultbuffer[34] | (resultbuffer[35] << 8) | (resultbuffer[36] << 16)) / 1000;
 	Serial.print(resultbuffer[36], HEX); Serial.print(resultbuffer[35], HEX); Serial.print(resultbuffer[34], HEX); Serial.print("  ");
-    Serial.println(float(resultbuffer[34] | (resultbuffer[35] << 8) | (resultbuffer[36] << 16)) / 1000);
+    Serial.println(meter[meterIdx].a1);
 
     Serial.print("I2  ");
+	meter[meterIdx].a2 = float(resultbuffer[37] | (resultbuffer[38] << 8) | (resultbuffer[39] << 16)) / 1000;
 	Serial.print(resultbuffer[39], HEX); Serial.print(resultbuffer[38], HEX); Serial.print(resultbuffer[37], HEX); Serial.print("  ");
-    Serial.println(float(resultbuffer[37] | (resultbuffer[38] << 8) | (resultbuffer[39] << 16)) / 1000);
+    Serial.println(meter[meterIdx].a2);
 
     Serial.print("I3  ");
+	meter[meterIdx].a3 = float(resultbuffer[40] | (resultbuffer[41] << 8) | (resultbuffer[42] << 16)) / 1000;
 	Serial.print(resultbuffer[42], HEX); Serial.print(resultbuffer[41], HEX); Serial.print(resultbuffer[40], HEX); Serial.print("  ");
-    Serial.println(float(resultbuffer[40] | (resultbuffer[41] << 8) | (resultbuffer[42] << 16)) / 1000);
+    Serial.println(meter[meterIdx].a3);
   }else{
     Serial.println("PARSING ERROR!");
   }
 }
-
-void packetParser_7_mqtt() {
-  if ( (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[8]==0x2B) and (resultbuffer[12]==0x0) )
-  {
-    mqttClient.publish("mirtek/Freq", String(float((resultbuffer[24] | (resultbuffer[25] << 8)))/100));
-    mqttClient.publish("mirtek/Cos", String(float((resultbuffer[26] | (resultbuffer[27] << 8)))/100));
-    mqttClient.publish("mirtek/V1", String(float((resultbuffer[28] | (resultbuffer[29] << 8)))/100));
-    mqttClient.publish("mirtek/V2", String(float((resultbuffer[30] | (resultbuffer[31] << 8)))/100));
-    mqttClient.publish("mirtek/V3", String(float((resultbuffer[32] | (resultbuffer[33] << 8)))/100));
-    mqttClient.publish("mirtek/I1", String(float(resultbuffer[34] | (resultbuffer[35] << 8) | (resultbuffer[36] << 16)) / 1000));
-    mqttClient.publish("mirtek/I2", String(float(resultbuffer[37] | (resultbuffer[38] << 8) | (resultbuffer[39] << 16)) / 1000));
-    mqttClient.publish("mirtek/I3", String(float(resultbuffer[40] | (resultbuffer[41] << 8) | (resultbuffer[42] << 16)) / 1000));
-  }else{
-    Serial.println("PARSING ERROR!");
-  }
-}
-
 
 // RequestPacket(transmitt_byte,MeterAdress[0], 0x05, 0); 
 //enum code		
@@ -635,28 +657,46 @@ void domoticzP1Publish(unsigned meterIdx ){
 
   if(meter[meterIdx].t1 != 0 && meter[meterIdx].t2 != 0 ){
     char buffer[128];
-    sprintf(buffer, "{\"idx\": %d, \"nvalue\": 0, \"svalue\":\"%d;%d; 0.0;0.0; %d;0\"}",
-        meter[meterIdx].DomoticzP1Idx, unsigned(meter[meterIdx].t1), unsigned(meter[meterIdx].t2), unsigned(meter[meterIdx].cons) );
+ 
+    char t1_chr[FLOATSZ];
+    char t2_chr[FLOATSZ];
+    
+    dtostrf(meter[meterIdx].t1, -FLOATSZ, 1, t1_chr);
+    dtostrf(meter[meterIdx].t2, -FLOATSZ, 1, t2_chr);
+
+    snprintf(buffer,sizeof(buffer),"{\"idx\": %d, \"nvalue\": 0, \"svalue\":\"%s;%s; 0.0;0.0; %d;0\"}",
+        meter[meterIdx].DomoticzP1Idx, t1_chr, t2_chr, unsigned(meter[meterIdx].cons) );
     Serial.print("Domotics: "); Serial.println(buffer);
     mqttClient.publish("domoticz/in", buffer);
   }
 }
 
-void packetParser_5_mqtt() {
-  if ( (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[8]==0x5) and (resultbuffer[17]==0x1) and (resultbuffer[44]==0x55) )
-  {
-//    sum = float((resultbuffer[25] << 16) | (resultbuffer[24] << 8) | resultbuffer[23]) * 10;
-//    t1  = float((resultbuffer[29] << 16) | (resultbuffer[28] << 8) | resultbuffer[27]) * 10;
-//    t2  = float((resultbuffer[33] << 16) | (resultbuffer[32] << 8) | resultbuffer[31]) * 10;
+void domoticzAmpersPublish(unsigned meterIdx ){
+  if(meter[meterIdx].a1 != 0 && meter[meterIdx].a2 != 0 && meter[meterIdx].a3 != 0 ){
+    char buffer[128];
+    char ampers_chr1[FLOATSZ];
+    char ampers_chr2[FLOATSZ];
+    char ampers_chr3[FLOATSZ];
+    dtostrf(meter[meterIdx].a1, -FLOATSZ, 2, ampers_chr1);
+    dtostrf(meter[meterIdx].a2, -FLOATSZ, 2, ampers_chr2);
+    dtostrf(meter[meterIdx].a3, -FLOATSZ, 2, ampers_chr3);
 
-//    mqttClient.publish("mirtek/SUM", String(sum,2));
-//    mqttClient.publish("mirtek/T1", String(t1,2));
-//    mqttClient.publish("mirtek/T2", String(t2,2));
-  }else{
-    Serial.println("PARSING ERROR!");
+    snprintf(buffer,sizeof(buffer), "{\"idx\": %d, \"nvalue\": 0, \"svalue\":\"%s;%s;%s\"}",
+        meter[meterIdx].DomoticzAmpersIdx, ampers_chr1, ampers_chr2, ampers_chr3 );
+    Serial.print("Domotics: "); Serial.println(buffer);
+    mqttClient.publish("domoticz/in", buffer);
   }
 }
 
+void domoticzVoltsPublish(unsigned meterIdx ){
+  if(meter[meterIdx].v1 != 0 && meter[meterIdx].v2 != 0 && meter[meterIdx].v3 != 0 ){
+    char buffer[128];
+    snprintf(buffer,sizeof(buffer), "{\"idx\": %d, \"nvalue\": 0, \"svalue\":\"%d;%d;%d\"}",
+        meter[meterIdx].DomoticzVoltsIdx, unsigned(meter[meterIdx].v1), unsigned(meter[meterIdx].v2), unsigned(meter[meterIdx].v3) );
+    Serial.print("Domotics: "); Serial.println(buffer);
+    mqttClient.publish("domoticz/in", buffer);
+  }
+}
 
 void requestMeters(void) {
     for(int i = 0; i < MAX_METERS; i++) {
@@ -665,7 +705,6 @@ void requestMeters(void) {
             packetType = 3;
             // date time
             RequestPacket1(transmitt_byte1, meter[i].MeterAdress, 0x1C);
-            //packetSender(transmitt_byte1);
             if(packetReceiver()){
                 packetParser_1();
             }
@@ -685,40 +724,24 @@ void requestMeters(void) {
             if(meter[i].DomoticzP1Idx != 0 && mqttClient.connected() ){
                 domoticzP1Publish(i);
             }
+            if(meter[i].DomoticzAmpersIdx != 0 && mqttClient.connected() ){
+                domoticzAmpersPublish(i);
+            }
+            if(meter[i].DomoticzVoltsIdx != 0 && mqttClient.connected() ){
+                domoticzVoltsPublish(i);
+            }
         }
     }
 }
 
 void setup() {
     Serial.begin(115200);
-
-    //SPI.setFrequency
-    bool validConfig = iotWebConfInit(); 
-    if (!validConfig)
-    {
-        mqttServerValue[0] = '\0';
-        mqttUserNameValue[0] = '\0';
-        mqttUserPasswordValue[0] = '\0';
-
-        MeterAdressValue1[0] = '\0';
-        MeterAdressValue2[0] = '\0';
-        MeterAdressValue3[0] = '\0';
-        MeterAdressValue4[0] = '\0';
-        DomoticzP1IdxValue1 [0] = '\0';
-        DomoticzP1IdxValue2 [0] = '\0';
-        DomoticzP1IdxValue3 [0] = '\0';
-        DomoticzP1IdxValue4 [0] = '\0';
-    }
-
-    // -- Set up required URL handlers on the web server.
-    server.on("/", handleRoot);
-    server.on("/config", [] { iotWebConf.handleConfig(); });
-    server.onNotFound([]() { iotWebConf.handleNotFound(); });
-
+    iotWebConfInit();
     mqttClient.begin(mqttServerValue, net);
 //    mqttClient.onMessage(mqttMessageReceived);
+    Serial.println("Web is Ready.");
 
-    Serial.println("Ready.");
+
 #ifdef MY_CC1101
     byte ver = cc1101.readStatusReg(CC1101_VERSION);
     if(ver != 0) {
@@ -770,10 +793,21 @@ void setup() {
         meter[1].MeterAdress = atoi(MeterAdressValue2);
         meter[2].MeterAdress = atoi(MeterAdressValue3);
         meter[3].MeterAdress = atoi(MeterAdressValue4);
+
         meter[0].DomoticzP1Idx = atoi(DomoticzP1IdxValue1);
         meter[1].DomoticzP1Idx = atoi(DomoticzP1IdxValue2);
         meter[2].DomoticzP1Idx = atoi(DomoticzP1IdxValue3);
         meter[3].DomoticzP1Idx = atoi(DomoticzP1IdxValue4);
+
+        meter[0].DomoticzAmpersIdx = atoi(DomoticzAmpersIdxValue1);
+        meter[1].DomoticzAmpersIdx = atoi(DomoticzAmpersIdxValue2);
+        meter[2].DomoticzAmpersIdx = atoi(DomoticzAmpersIdxValue3);
+        meter[3].DomoticzAmpersIdx = atoi(DomoticzAmpersIdxValue4);
+
+        meter[0].DomoticzVoltsIdx = atoi(DomoticzVoltsIdxValue1);
+        meter[1].DomoticzVoltsIdx = atoi(DomoticzVoltsIdxValue2);
+        meter[2].DomoticzVoltsIdx = atoi(DomoticzVoltsIdxValue3);
+        meter[3].DomoticzVoltsIdx = atoi(DomoticzVoltsIdxValue4);
         //requestMeters();
     }
     else {
@@ -834,7 +868,7 @@ void handleRoot()
     s += "<li>MQTT server: ";
     s += mqttServerValue;
     s += "</ul>";
-    s += "<a href='config'>configu page</a>";
+    s += "<a href='config'>configure page</a>";
     s += "</body></html>\n";
 
     server.send(200, "text/html", s);
@@ -873,12 +907,15 @@ bool connectMqtt() {
         // Do not repeat within 1 sec.
         return false;
     }
-    Serial.println("Connecting to MQTT server...");
+    DEBUG_LOG("Connecting to MQTT server...");
+    //Serial.println("Connecting to MQTT server...");
+    
     if (!connectMqttOptions()) {
         lastMqttConnectionAttempt = now;
         return false;
     }
-    Serial.println("MQTT Connected!");
+    DEBUG_LOG("MQTT Connected!");
+    //Serial.println("MQTT Connected!");
 
     mqttClient.subscribe("mirtek/action");
     return true;
@@ -901,99 +938,3 @@ bool connectMqttOptions()
     }
     return result;
 }
-
-/*
-void mqttMessageReceived(String& topic, String& payload)
-{
-    //Очищаем выходной буфер
-    for (int i = 0; i < 61; i++) {
-        resultbuffer[i] = 0;
-    }
-    //----------------------
-    bool Request_Status = 0;
-    Serial.println(payload);
-    switch (payload.toInt()) {
-    case 1:
-        Serial.println("1 reseived from MQTT");
-        RequestPacket_1();
-        break;
-    case 2:
-        Serial.println("2 reseived from MQTT");
-        RequestPacket_2();
-        break;
-    case 3:
-        Serial.println("3 reseived from MQTT");
-        RequestPacket_3();
-        break;
-    case 4:
-        Serial.println("4 reseived from MQTT");
-        RequestPacket_4();
-        break;
-    case 5:
-        Serial.println("5 reseived from MQTT");
-        RequestPacket_5();
-        break;
-    case 6:
-        Serial.println("6 reseived from MQTT");
-        RequestPacket_6();
-        break;
-    case 7:
-        Serial.println("7 reseived from MQTT");
-        RequestPacket_7();
-        break;
-    case 8:
-        Serial.println("8 reseived from MQTT");
-        RequestPacket_8();
-        break;
-    case 9:
-        Serial.println("9 reseived from MQTT");
-//        RequestPacket_9_pre();
-//        delay(5000);
-        RequestPacket_9();
-        break;
-        
-    }
-
-    for (int k = 0; k < 3; k++) {  //Пробуем 5 раз сделать запросы и получить ответы
-        packetSender(); //отправляем пакет
-        packetReceiver(); //принимаем и склеиваем пакет
-        if ((myCRC == resultbuffer[bytecount - 2]) & ((atoi(MeterAdressValue) & 0xff) == resultbuffer[6]) & (((atoi(MeterAdressValue) >> 8) & 0xff) == resultbuffer[7])) {
-            //if ((myCRC == resultbuffer[bytecount - 2]) {
-            Serial.println("CRC & adress ok");
-            switch (payload.toInt()) {
-            case 1:
-
-                break;
-            case 2:
-
-                break;
-            case 3:
-
-                break;
-            case 4:
-
-                break;
-            case 5:
-                packetParser_5_mqtt();
-                break;
-            case 6:
-
-                break;
-            case 7:
-                //packetParser_7();
-                break;
-            case 9:
-                packetParser_7_mqtt();
-                break;
-            }
-            Request_Status = 1;
-            mqttClient.publish("mirtek/Request_Status", "Ok");
-            break;
-        }
-
-    }
-    if (!Request_Status == 1) {
-        mqttClient.publish("mirtek/Request_Status", "Error");
-    }
-}
-*/
