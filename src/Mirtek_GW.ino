@@ -14,9 +14,9 @@
 #include <TimerMs.h>
 
 #define MY_DEBUG
-#ifdef MY_DEBUG
-#define DEBUG_LOG(msg, ...) MsgOutImpl(msg, ##__VA_ARGS__)
-void MsgOutImpl(const char* msg, ...)
+#ifdef  MY_DEBUG
+#define DEBUG_LOG(msg, ...) DebugLog(msg, ##__VA_ARGS__)
+void DebugLog(const char* msg, ...)
 {
     char buff[256];
     va_list argptr;
@@ -24,8 +24,18 @@ void MsgOutImpl(const char* msg, ...)
     vsnprintf(buff, sizeof(buff) , msg, argptr);
     Serial.println(buff);
 }
+#define DEBUG_PKTLOG(pkt, pktLen) DebugPktLog(pkt, pktLen)
+void DebugPktLog(byte* pkt, unsigned pktLen )
+{
+    for (unsigned i = 0; i < pktLen; i++) {
+        Serial.print(" ");
+        Serial.print(pkt[i], HEX);
+    }
+    Serial.println();
+}
 #else
     #define DEBUG_LOG(msg, ...)
+    #define DEBUG_PKTLOG(pkt, pktLen)
 #endif
 
 unsigned tmr_tele_time=30*1000; //раз в 10 cек запрашиваем и отправляем информацию в mqtt
@@ -323,11 +333,11 @@ bool iotWebConfInit(){
     iotWebConf.setWifiConnectionCallback(&wifiConnected);
 
     // -- Initializing the configuration.
-    bool validConfig = iotWebConf.init(); 
-    Serial.print("Configuration: "); Serial.println(validConfig);
+    bool validConfig = iotWebConf.init();
+    DEBUG_LOG("Configuration: %d", validConfig);
     if (!validConfig)
     {
-		Serial.println("Configuration is not valid!!! Update it!");
+        DEBUG_LOG("Configuration is not valid!!! Update it!");
         iotWebConf.saveConfig();
 /*
         mqttServerValue[0] = '\0';
@@ -370,21 +380,17 @@ void packetSender(byte tr[])  //функция отправки пакета
     ELECHOUSE_cc1101.SpiStrobe(0x3B);  // Flush the TX FIFO buffer
     ELECHOUSE_cc1101.SpiStrobe(0x36);  // Exit RX / TX, turn off frequency synthesizer and exit
     ELECHOUSE_cc1101.SpiWriteReg(0x3e, 0xC4); //выставляем мощность 10dB
-	Serial.print("Packet sent: "); Serial.println(*tr);
+    DEBUG_LOG("Packet sent:  %d", *tr);
     ELECHOUSE_cc1101.SendData(tr, tr[0] + 1); //отправляем пакет
     ELECHOUSE_cc1101.SpiStrobe(0x3A);  // Flush the RX FIFO buffer
     ELECHOUSE_cc1101.SpiStrobe(0x34);  // Enable RX
     
-    for (int i = 0; i < tr[0] + 1; i++) {
-        Serial.print(tr[i], HEX);
-        Serial.print(" ");
-    }
-    Serial.println();
+    DEBUG_PKTLOG(tr, tr[0] + 1);
 }
 
 // Request Type: 0x20, PacketLen: 0x0F
 void RequestPacket1(byte tr[], unsigned addr, byte code) {
-      Serial.print("RequestPacket: "); Serial.print("Addr: "); Serial.print(addr); Serial.print(" Code: "); Serial.println(code, HEX);
+    DEBUG_LOG("RequestPacket1: Addr: %d Code: %X", addr, code);
 	
 //    tr[0] = 0x0F; // длина пакета 16 байт
 //    tr[1] = 0x73; // const: 
@@ -415,8 +421,7 @@ void RequestPacket1(byte tr[], unsigned addr, byte code) {
 
 // Request Type: 0x21, PacketLen: 0x10
 void RequestPacket2(byte tr[], unsigned addr ,byte code, byte type) {
-      Serial.print("RequestPacket: "); Serial.print("Addr: "); Serial.print(addr); Serial.print(" Code: "); Serial.print(code, HEX); Serial.print(" Type: "); Serial.println(type, HEX);
-	
+    DEBUG_LOG("RequestPacket2: Addr: %d Code: %X Type: %X", addr, code, type);
 //    tr[0] = 0x10; //длина пакета 17 байт
 //    tr[1] = 0x73; // const: 
 //    tr[2] = 0x55; // const: начало payload
@@ -447,20 +452,16 @@ void RequestPacket2(byte tr[], unsigned addr ,byte code, byte type) {
 
 //функция приёма пакета (помещает его в resultbuffer[])
 bool packetReceiver() {
-//    for (int i=0; i < 61; i++){
-//      resultbuffer[i]=0x00;
-//    }
-    
+   
     tmr.start();
-    int PackCount = 0; //счётчик принятых из эфира пакетов
-    bytecount = 0;     //указатель байтов в результирующем буфере
-    byte buffer[61];   //буффер пакетов, принятых из трансивера (или отправленных в трансивер)
+    bytecount = 0;       // указатель байтов в результирующем буфере
+
+    int PackCount = 0;   // счётчик принятых из трансивера
+    byte buffer[4][61];  // массив буфферов пакетов, принятых из трансивера
     
-    Serial.print("ReceiveDataSize:");
-    while (!tmr.tick() && PackCount < packetType) {
+    while (!tmr.tick() && PackCount < packetType && PackCount < 4) {
         delay(5);
         if (ELECHOUSE_cc1101.CheckReceiveFlag()) {
-            PackCount++;
             /*
             //Rssi Level in dBm
             Serial.print("Rssi: ");
@@ -471,68 +472,75 @@ bool packetReceiver() {
             Serial.println(ELECHOUSE_cc1101.getLqi());
             */
 
-            //Get received Data and calculate length
-            //int size= ELECHOUSE_cc1101.SpiReadReg(CC1101_RXFIFO);
-            // Serial.println("ReceiveData1: "); Serial.println(size);
-            int len = ELECHOUSE_cc1101.ReceiveData(buffer);
+            ELECHOUSE_cc1101.ReceiveData(buffer[PackCount]);
             delay(1);
             ELECHOUSE_cc1101.SpiStrobe(0x36);  // Exit RX / TX, turn off frequency synthesizer and exit
             ELECHOUSE_cc1101.SpiStrobe(0x3A);  // Flush the RX FIFO buffer
             ELECHOUSE_cc1101.SpiStrobe(0x3B);  // Flush the TX FIFO buffer
             ELECHOUSE_cc1101.SpiStrobe(0x34);  // Enable RX
-
-            //buffer[len] = '\0';
-            Serial.print(" "); Serial.print(len); Serial.print(" "); Serial.print(buffer[0]); 
-
-            
-            //Print received in bytes format.
-            /*
-            for (int i = 0; i < len; i++) {
-              //sprintf(s, "%02x", buffer[i]);
-              //Serial.print(s);
-              Serial.print(buffer[i], HEX);
-              Serial.print(" ");
-            }
-            Serial.println();
-            */
-            int start = 1;
-        //    if (PackCount == 4 && len == 6 ){
-        //        start = 2;
-        //    }
-            //подшиваем 1/3 пакета в общий пакет
-            for (int i = start; i < len && bytecount < sizeof(resultbuffer); i++) {
-                resultbuffer[bytecount] = buffer[i];
-                bytecount++;
-            }
-
+            PackCount++;
         }
     }
-    Serial.println("");
-    Serial.print("Packets received: ");
-    Serial.println(PackCount);
-    //Печатаем общий пакет
-    for (unsigned i = 0; i < bytecount; i++)
-    {
-        Serial.print(resultbuffer[i], HEX);
-        Serial.print(" ");
-    }
-    Serial.println();
 
-    Serial.print("Packet length: "); Serial.println(bytecount);
-    // Test CRC ------------------------------
-    crc.reset();
-    crc.setPolynome(0xA9);
-    for (unsigned i = 2; i < (bytecount - 2); i++)
-    {
-        crc.add(resultbuffer[i]);
+    for(int p = 0; p < PackCount; p++ ){
+       //подшиваем пакеты в общий пакет
+        for (int i = 1; i <= buffer[p][0] && bytecount < sizeof(resultbuffer); i++) {
+            byte b = buffer[p][i];
+            if(b == 0x73 && buffer[p][i+1] == 0x11){
+                resultbuffer[bytecount] = 0x55;
+                i++;   
+            }
+            else{
+                resultbuffer[bytecount] = b;
+            }
+            bytecount++;
+        }
     }
-  
+
+    if(bytecount < 4)
+         return false;
+
+    // Test CRC ------------------------------
+#if 0
+    for(byte j=0; j < 255; j++){
+        crc.reset();
+        crc.setPolynome(0xA9);
+        bool find = false;
+        for (unsigned i = 2; i < (bytecount - 2); i++){
+            if(resultbuffer[i] == 0x73 && resultbuffer[i+1] == 0x11) {
+                find = true;
+                crc.add(j);
+                i++;
+            }
+            else{
+                crc.add(resultbuffer[i]);
+            }
+        }
+        uint8_t myCRC = crc.getCRC();
+        if(find == true && resultbuffer[bytecount - 2] == myCRC){
+            DEBUG_LOG("CRC!!!!: %X ", j);
+        }
+    }
+#else
+        crc.reset();
+        crc.setPolynome(0xA9);
+        for (unsigned i = 2; i < (bytecount - 2); i++){
+             crc.add(resultbuffer[i]);
+        }
+#endif
+
     uint8_t myCRC = crc.getCRC();
-    Serial.print("R_CRC: "); Serial.print(resultbuffer[bytecount - 2], HEX); Serial.print(" C_CRC: "); Serial.println(myCRC, HEX);
     if(resultbuffer[bytecount - 2] == myCRC){
         return true;
     }
-    else{
+    else {
+        DEBUG_LOG("R_CRC: %X C_CRC: %X", resultbuffer[bytecount - 2], myCRC);
+        DEBUG_LOG("PackCount: %d Packet length: %d", PackCount, bytecount);
+        for(int p = 0; p < PackCount; p++ ){
+            DEBUG_LOG("Buffer Len: %d", buffer[p][0]);
+            DEBUG_PKTLOG(buffer[p], buffer[p][0] + 1);
+        }
+        DEBUG_PKTLOG(resultbuffer,bytecount);
         return false;
     }
 }
@@ -655,7 +663,7 @@ void domoticzP1Publish(unsigned meterIdx ){
 //  DynamicJsonDocument doc(1024);
 //  JsonObject obj = doc.as<JsonObject>();
 
-  if(meter[meterIdx].t1 != 0 && meter[meterIdx].t2 != 0 ){
+  if(meter[meterIdx].t1 > 0 && meter[meterIdx].t2 > 0 && meter[meterIdx].cons > 0 ){
     char buffer[128];
  
     char t1_chr[FLOATSZ];
@@ -664,7 +672,7 @@ void domoticzP1Publish(unsigned meterIdx ){
     dtostrf(meter[meterIdx].t1, -FLOATSZ, 1, t1_chr);
     dtostrf(meter[meterIdx].t2, -FLOATSZ, 1, t2_chr);
 
-    snprintf(buffer,sizeof(buffer),"{\"idx\": %d, \"nvalue\": 0, \"svalue\":\"%s;%s; 0.0;0.0; %d;0\"}",
+    snprintf(buffer,sizeof(buffer),"{\"idx\":%d, \"nvalue\":0, \"svalue\":\"%s;%s; 0.0;0.0; %d;0\"}",
         meter[meterIdx].DomoticzP1Idx, t1_chr, t2_chr, unsigned(meter[meterIdx].cons) );
     Serial.print("Domotics: "); Serial.println(buffer);
     mqttClient.publish("domoticz/in", buffer);
@@ -672,7 +680,7 @@ void domoticzP1Publish(unsigned meterIdx ){
 }
 
 void domoticzAmpersPublish(unsigned meterIdx ){
-  if(meter[meterIdx].a1 != 0 && meter[meterIdx].a2 != 0 && meter[meterIdx].a3 != 0 ){
+  if(meter[meterIdx].a1 > 0 && meter[meterIdx].a2 > 0 && meter[meterIdx].a3 > 0 ){
     char buffer[128];
     char ampers_chr1[FLOATSZ];
     char ampers_chr2[FLOATSZ];
@@ -681,7 +689,7 @@ void domoticzAmpersPublish(unsigned meterIdx ){
     dtostrf(meter[meterIdx].a2, -FLOATSZ, 2, ampers_chr2);
     dtostrf(meter[meterIdx].a3, -FLOATSZ, 2, ampers_chr3);
 
-    snprintf(buffer,sizeof(buffer), "{\"idx\": %d, \"nvalue\": 0, \"svalue\":\"%s;%s;%s\"}",
+    snprintf(buffer,sizeof(buffer), "{\"idx\":%d, \"nvalue\":0, \"svalue\":\"%s;%s;%s\"}",
         meter[meterIdx].DomoticzAmpersIdx, ampers_chr1, ampers_chr2, ampers_chr3 );
     Serial.print("Domotics: "); Serial.println(buffer);
     mqttClient.publish("domoticz/in", buffer);
@@ -689,7 +697,7 @@ void domoticzAmpersPublish(unsigned meterIdx ){
 }
 
 void domoticzVoltsPublish(unsigned meterIdx ){
-  if(meter[meterIdx].v1 != 0 && meter[meterIdx].v2 != 0 && meter[meterIdx].v3 != 0 ){
+  if(meter[meterIdx].v1 > 0 && meter[meterIdx].v2 > 0 && meter[meterIdx].v3 > 0 ){
     char buffer[128];
     snprintf(buffer,sizeof(buffer), "{\"idx\": %d, \"nvalue\": 0, \"svalue\":\"%d;%d;%d\"}",
         meter[meterIdx].DomoticzVoltsIdx, unsigned(meter[meterIdx].v1), unsigned(meter[meterIdx].v2), unsigned(meter[meterIdx].v3) );
@@ -723,12 +731,21 @@ void requestMeters(void) {
 
             if(meter[i].DomoticzP1Idx != 0 && mqttClient.connected() ){
                 domoticzP1Publish(i);
+                meter[i].t1 = -1;
+                meter[i].t2 = -1;
+                meter[i].cons = -1;
             }
             if(meter[i].DomoticzAmpersIdx != 0 && mqttClient.connected() ){
                 domoticzAmpersPublish(i);
+                meter[i].a1 = -1;
+                meter[i].a2 = -1;
+                meter[i].a3 = -1;
             }
             if(meter[i].DomoticzVoltsIdx != 0 && mqttClient.connected() ){
                 domoticzVoltsPublish(i);
+                meter[i].v1 = -1;
+                meter[i].v2 = -1;
+                meter[i].v3 = -1;
             }
         }
     }
