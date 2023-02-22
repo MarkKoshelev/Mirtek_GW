@@ -189,8 +189,6 @@ unsigned bytecount = 0; //указатель байтов в результир�
 TimerMs tmr(2000, 0, 0); //инициализируем таймер ожидания ответа счетчика
 TimerMs tmr_tele(tmr_tele_time, 0, 0); //инициализируем таймер, отправляющий значения в MQTT
 
-int packetType = 0; //кол-во подпакетов в ответе - зависит от типа запроса (3 для запросов 1-4, 4 для запросов 5,6)
-
 // -- Initial name of the Thing. Used e.g. as SSID of the own Access Point.
 const char thingName[] = "Mirtek_GW";
 
@@ -389,7 +387,7 @@ void packetSender(byte tr[])  //функция отправки пакета
 }
 
 // Request Type: 0x20, PacketLen: 0x0F
-void RequestPacket1(byte tr[], unsigned addr, byte code) {
+int RequestPacket1(byte tr[], unsigned addr, byte code) {
     DEBUG_LOG("RequestPacket1: Addr: %d Code: %X", addr, code);
 	
 //    tr[0] = 0x0F; // длина пакета 16 байт
@@ -416,11 +414,11 @@ void RequestPacket1(byte tr[], unsigned addr, byte code) {
     tr[14] = crc.getCRC(); //CRC
 //    tr[15] = 0x55; //конец payload
     packetSender(tr);   //отправляем пакет
-    packetType = 4;
+    return 3;
 }
 
 // Request Type: 0x21, PacketLen: 0x10
-void RequestPacket2(byte tr[], unsigned addr ,byte code, byte type) {
+int RequestPacket2(byte tr[], unsigned addr ,byte code, byte type) {
     DEBUG_LOG("RequestPacket2: Addr: %d Code: %X Type: %X", addr, code, type);
 //    tr[0] = 0x10; //длина пакета 17 байт
 //    tr[1] = 0x73; // const: 
@@ -447,12 +445,13 @@ void RequestPacket2(byte tr[], unsigned addr ,byte code, byte type) {
     tr[15] = crc.getCRC(); //CRC
 //    tr[16] = 0x55; //конец payload
     packetSender(tr);   //отправляем пакет
-    packetType = 4;
+    return 4;
 }
 
-//функция приёма пакета (помещает его в resultbuffer[])
-bool packetReceiver() {
-   
+// функция приёма пакета (помещает его в resultbuffer[])
+// packetType кол-во подпакетов в ответе - зависит от типа запроса (3 для запросов 1-4, 4 для запросов 5,6)
+bool packetReceiver(int packetType) {
+
     tmr.start();
     bytecount = 0;       // указатель байтов в результирующем буфере
 
@@ -545,60 +544,91 @@ bool packetReceiver() {
     }
 }
 
-void packetParser_7(unsigned meterIdx) {
-  if ( (bytecount == 45) and (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[8]==0x2B) and (resultbuffer[12]==0x0) )
+// RequestPacket(transmitt_byte,MeterAdress[0], 0x2B, 0x00);
+bool parse_current_state(unsigned meterIdx) 
+{ 
+  bool ret = true;
+  if ( (bytecount == 45) and (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[8]==0x2B) and (resultbuffer[12]==0x0) and (resultbuffer[44]==0x55))
   {
     Serial.print("Active:  ");
 	Serial.print(resultbuffer[20], HEX); Serial.print(resultbuffer[19], HEX); Serial.print(resultbuffer[18], HEX); Serial.print("  ");
-    meter[meterIdx].cons = float((resultbuffer[18] | (resultbuffer[19] << 8) | (resultbuffer[20] << 16)));
-	Serial.println(meter[meterIdx].cons);
+    float cons = float((resultbuffer[18] | (resultbuffer[19] << 8) | (resultbuffer[20] << 16))); //watts
+    if(cons > 50000) // current power consumption < 50 kwatt
+		ret = false;
+	
+	meter[meterIdx].cons = cons;
+    Serial.println(cons);
 
     Serial.print("Reactive:  ");
 	Serial.print(resultbuffer[23], HEX); Serial.print(resultbuffer[22], HEX); Serial.print(resultbuffer[21], HEX); Serial.print("  ");
     Serial.println(float((resultbuffer[21] | (resultbuffer[22] << 8) | (resultbuffer[23] << 16) )));
 
     Serial.print("Freq:  ");
-    Serial.println(float((resultbuffer[24] | (resultbuffer[25] << 8)))/100);
-
+    float freq = float((resultbuffer[24] | (resultbuffer[25] << 8)))/100;
+	if(freq > 51 || freq < 49)
+		ret = false;
+	Serial.println(freq);
+			
     Serial.print("Cos:  ");
     Serial.println(float((resultbuffer[26] | (resultbuffer[27] << 8))) / 1000);
 
     Serial.print("V1:  ");
-	meter[meterIdx].v1 = float((resultbuffer[28] | (resultbuffer[29] << 8))) / 100;
+    float v1 = float((resultbuffer[28] | (resultbuffer[29] << 8))) / 100;
+    if(v1 > 400)
+		ret = false;
+
+	meter[meterIdx].v1 = v1;
 	Serial.print(resultbuffer[29], HEX); Serial.print(resultbuffer[28], HEX); Serial.print("  ");
-    Serial.println(meter[meterIdx].v1);
+    Serial.println(v1);
 
     Serial.print("V2:  ");
-	meter[meterIdx].v2 = float((resultbuffer[30] | (resultbuffer[31] << 8))) / 100;
+    float v2 = float((resultbuffer[30] | (resultbuffer[31] << 8))) / 100;
+    if(v2 > 400)
+		ret = false;
+	meter[meterIdx].v2 = v2;
 	Serial.print(resultbuffer[31], HEX); Serial.print(resultbuffer[30], HEX); Serial.print("  ");
-    Serial.println(meter[meterIdx].v2);
+    Serial.println(v2);
 
     Serial.print("V3:  ");
-	meter[meterIdx].v3 = float((resultbuffer[32] | (resultbuffer[33] << 8))) / 100;
+    float v3 = float((resultbuffer[32] | (resultbuffer[33] << 8))) / 100;
+    if(v3 > 400)
+		ret = false;
+	meter[meterIdx].v3 = v3;
 	Serial.print(resultbuffer[33], HEX); Serial.print(resultbuffer[32], HEX); Serial.print("  ");
-    Serial.println(meter[meterIdx].v3);
+    Serial.println(v3);
 
     Serial.print("I1  ");
-	meter[meterIdx].a1 = float(resultbuffer[34] | (resultbuffer[35] << 8) | (resultbuffer[36] << 16)) / 1000;
+    float a1 = float(resultbuffer[34] | (resultbuffer[35] << 8) | (resultbuffer[36] << 16)) / 1000;
+    if(a1 > 100)
+		ret = false;
+	meter[meterIdx].a1 = a1;
 	Serial.print(resultbuffer[36], HEX); Serial.print(resultbuffer[35], HEX); Serial.print(resultbuffer[34], HEX); Serial.print("  ");
-    Serial.println(meter[meterIdx].a1);
+    Serial.println(a1);
 
     Serial.print("I2  ");
-	meter[meterIdx].a2 = float(resultbuffer[37] | (resultbuffer[38] << 8) | (resultbuffer[39] << 16)) / 1000;
+    float a2 = float(resultbuffer[37] | (resultbuffer[38] << 8) | (resultbuffer[39] << 16)) / 1000;
+    if(a2 > 100)
+		ret = false;
+	meter[meterIdx].a2 = a2;
 	Serial.print(resultbuffer[39], HEX); Serial.print(resultbuffer[38], HEX); Serial.print(resultbuffer[37], HEX); Serial.print("  ");
-    Serial.println(meter[meterIdx].a2);
+    Serial.println(a2);
 
     Serial.print("I3  ");
-	meter[meterIdx].a3 = float(resultbuffer[40] | (resultbuffer[41] << 8) | (resultbuffer[42] << 16)) / 1000;
+    float a3 = float(resultbuffer[40] | (resultbuffer[41] << 8) | (resultbuffer[42] << 16)) / 1000;
+    if(a3 > 100)
+		ret = false;
+	meter[meterIdx].a3 = a3;
 	Serial.print(resultbuffer[42], HEX); Serial.print(resultbuffer[41], HEX); Serial.print(resultbuffer[40], HEX); Serial.print("  ");
-    Serial.println(meter[meterIdx].a3);
+    Serial.println(a3);
   }else{
+	ret = false;
     Serial.println("PARSING ERROR!");
   }
+  return ret;
 }
 
 // RequestPacket(transmitt_byte,MeterAdress[0], 0x05, 0); 
-//enum code		
+// enum code		
 // 4 - Aabs = "A+" + "A-"
 // 0 - A+
 // 1 - A-
@@ -609,29 +639,32 @@ void packetParser_7(unsigned meterIdx) {
 // 7 - R2
 // 8 - R3
 // 9 - R4
-void packetParser_5(unsigned meterIdx) {
-  if ( (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[8]==0x5) and (resultbuffer[17]==0x1) and (resultbuffer[44]==0x55) )
+void parse_sum_t1_t2(unsigned meterIdx) {
+  if ( (bytecount == 45) and (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[8]==0x05)  and (resultbuffer[17]==0x1) and (resultbuffer[44]==0x55) )
   {
     Serial.print("SUM:  ");
 	Serial.print(resultbuffer[26], HEX); Serial.print(resultbuffer[25], HEX); Serial.print(resultbuffer[24], HEX); Serial.print(resultbuffer[23], HEX); Serial.print("  ");
-    meter[meterIdx].sum = float((resultbuffer[25] << 16) | (resultbuffer[24] << 8) | resultbuffer[23]) * 10;
-	Serial.println(meter[meterIdx].sum / 1000);
+    float sum = float((resultbuffer[25] << 16) | (resultbuffer[24] << 8) | resultbuffer[23]) * 10;
+    meter[meterIdx].sum = sum;
+	Serial.println(sum / 1000);
 
     Serial.print("T1:  ");
+    float t1 = float((resultbuffer[29] << 16) | (resultbuffer[28] << 8) | resultbuffer[27]) * 10;
 	Serial.print(resultbuffer[30], HEX); Serial.print(resultbuffer[29], HEX); Serial.print(resultbuffer[28], HEX); Serial.print(resultbuffer[27], HEX); Serial.print("  ");
-    meter[meterIdx].t1  = float((resultbuffer[29] << 16) | (resultbuffer[28] << 8) | resultbuffer[27]) * 10;
-    Serial.println(meter[meterIdx].t1 / 1000);
+    meter[meterIdx].t1  = t1;
+    Serial.println(t1 / 1000);
 
     Serial.print("T2:  ");
+    float t2 = float((resultbuffer[33] << 16) | (resultbuffer[32] << 8) | resultbuffer[31]) * 10;
 	Serial.print(resultbuffer[34], HEX); Serial.print(resultbuffer[33], HEX); Serial.print(resultbuffer[32], HEX); Serial.print(resultbuffer[31], HEX); Serial.print("  ");
-    meter[meterIdx].t2  = float((resultbuffer[33] << 16) | (resultbuffer[32] << 8) | resultbuffer[31]) * 10;
-    Serial.println(meter[meterIdx].t2 / 1000);   
+    meter[meterIdx].t2  = t2;
+    Serial.println(t2 / 1000);   
   }else{
     Serial.println("PARSING ERROR!");
   }
 }
 
-void packetParser_1() {
+void parse_date_time() {
   //73 55 7 0 9 FF E9 99 1C A8 3 5B 0 29 4 0 1 1F A 16 79 55 
   if ( (bytecount == 22) )
   {
@@ -710,43 +743,43 @@ void requestMeters(void) {
     for(int i = 0; i < MAX_METERS; i++) {
         Serial.print("MeterAdress: "); Serial.println(meter[i].MeterAdress);
         if(meter[i].MeterAdress != 0){
-            packetType = 3;
+            int packetType;
             // date time
-            RequestPacket1(transmitt_byte1, meter[i].MeterAdress, 0x1C);
-            if(packetReceiver()){
-                packetParser_1();
+            packetType = RequestPacket1(transmitt_byte1, meter[i].MeterAdress, 0x1C);
+            if(packetReceiver(packetType)){
+                parse_date_time();
             }
             // T1, T2
-            packetType = 4;
-            RequestPacket2(transmitt_byte, meter[i].MeterAdress, 0x05, 0); 
-            if(packetReceiver()){
-                packetParser_5(i);
+            packetType = RequestPacket2(transmitt_byte, meter[i].MeterAdress, 0x05, 0); 
+            if(packetReceiver(packetType)){
+                parse_sum_t1_t2(i);
             }
           
             // Consume Active Energy, Volts, Ampers
-            RequestPacket2(transmitt_byte, meter[i].MeterAdress, 0x2b, 0); 
-            if(packetReceiver()){
-                packetParser_7(i);
+            packetType = RequestPacket2(transmitt_byte, meter[i].MeterAdress, 0x2b, 0); 
+            if(packetReceiver(packetType)){
+                if(parse_current_state(i)){
+					if(meter[i].DomoticzP1Idx != 0 && mqttClient.connected() ){
+						domoticzP1Publish(i);
+						meter[i].t1 = -1;
+						meter[i].t2 = -1;
+						meter[i].cons = -1;
+					}
+					if(meter[i].DomoticzAmpersIdx != 0 && mqttClient.connected() ){
+						domoticzAmpersPublish(i);
+						meter[i].a1 = -1;
+						meter[i].a2 = -1;
+						meter[i].a3 = -1;
+					}
+					if(meter[i].DomoticzVoltsIdx != 0 && mqttClient.connected() ){
+						domoticzVoltsPublish(i);
+						meter[i].v1 = -1;
+						meter[i].v2 = -1;
+						meter[i].v3 = -1;
+					}
+				}
             }
 
-            if(meter[i].DomoticzP1Idx != 0 && mqttClient.connected() ){
-                domoticzP1Publish(i);
-                meter[i].t1 = -1;
-                meter[i].t2 = -1;
-                meter[i].cons = -1;
-            }
-            if(meter[i].DomoticzAmpersIdx != 0 && mqttClient.connected() ){
-                domoticzAmpersPublish(i);
-                meter[i].a1 = -1;
-                meter[i].a2 = -1;
-                meter[i].a3 = -1;
-            }
-            if(meter[i].DomoticzVoltsIdx != 0 && mqttClient.connected() ){
-                domoticzVoltsPublish(i);
-                meter[i].v1 = -1;
-                meter[i].v2 = -1;
-                meter[i].v3 = -1;
-            }
         }
     }
 }
