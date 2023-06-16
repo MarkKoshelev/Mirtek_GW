@@ -485,14 +485,19 @@ bool packetReceiver(int packetType) {
        //подшиваем пакеты в общий пакет
         for (int i = 1; i <= buffer[p][0] && bytecount < sizeof(resultbuffer); i++) {
             byte b = buffer[p][i];
-            if(b == 0x73 && buffer[p][i+1] == 0x11){
-                resultbuffer[bytecount] = 0x55;
-                i++;   
+            if(b == 0x73 ){
+                if(buffer[p][i+1] == 0x11){
+                    resultbuffer[bytecount++] = 0x55;
+                    i++;
+                    continue;
+                }
+                if(buffer[p][i+1] == 0x22){
+                    resultbuffer[bytecount++] = 0x73;
+                    i++;
+                    continue;
+                }
             }
-            else{
-                resultbuffer[bytecount] = b;
-            }
-            bytecount++;
+            resultbuffer[bytecount++] = b;
         }
     }
 
@@ -506,7 +511,8 @@ bool packetReceiver(int packetType) {
         crc.setPolynome(0xA9);
         bool find = false;
         for (unsigned i = 2; i < (bytecount - 2); i++){
-            if(resultbuffer[i] == 0x73 && resultbuffer[i+1] == 0x11) {
+//            if(resultbuffer[i] == 0x73 && resultbuffer[i+1] == 0x11) {
+            if(resultbuffer[i] == 0x73 && resultbuffer[i+1] == 0x22) {
                 find = true;
                 crc.add(j);
                 i++;
@@ -912,8 +918,12 @@ void handleRoot()
         // -- Captive portal request were already served.
         return;
     }
-    String s = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/>";
-    s += "<title>Mirtek-to-MQTT</title></head><body>Gateway";
+    String s = "<!DOCTYPE html><html lang=\"en\">";
+	s += "<head>";
+	s += "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/>";
+    s += "<title>Mirtek-to-MQTT</title>";
+	s += "</head>";
+	s += "<body>Gateway";
     s += "<ul>";
     s += "<li>MQTT server: ";
     s += mqttServerValue;
@@ -923,6 +933,284 @@ void handleRoot()
 
     server.send(200, "text/html", s);
 }
+/*
+https://htmled.it/redaktor/
+class htmlPage
+{
+	private:
+		String s;
+	public:
+		addTable(); //<table xxx> [tbody]</table>
+		addTableBody(); //<tbody>[tr] </tbody> 
+		addTableRow();  // <tr xxx>[td]...[td] </tr>
+		addTableData(); <td xxx>data</td>
+}
+createPage()
+{
+	addTable();
+}
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Article</title>
+</head>
+ <style>
+ table{width:50%}
+.one, .two{width:75%; border:0px}
+.one{border-spacing:40px; padding:10px; text-align:center}
+.two{border-spacing:0px; padding:75px; text-align:left}
+</style>
+<body>
+    <table style="border:2px solid blue">
+        <tr>
+            <td class="one">Lorem ipsum</td>
+            <td class="one">Lorem ipsum</td>
+        </tr>
+    </table>
+    <table style="border:2px solid red">
+        <tr>
+            <td class="two">Lorem ipsum</td>
+            <td class="two">Lorem ipsum</td>
+        </tr>
+    </table>
+</body>
+<html>
+
+
+
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/>
+<head>
+	<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/>
+    <title>Mirtek-to-MQTT</title>
+	<style type="text/css">
+		.table_1_class td { text-align: left; color:red;}
+		TABLE {
+			border: 1px;
+			border-collapse: collapse;
+			border-style: solid;
+			background: white; 
+			color: black; 
+		}
+		TH {
+			background: white;
+			text-align: center;
+			height: 15px;
+			width: 33.3333%;			
+		}
+		TD {
+			background: white;
+			text-align: center;
+			height: 15px;
+			width: 33.3333%;			
+		}
+	</style>
+</head>
+<table style="border-style: solid; height: 200px; width: 100%; ">
+	<tbody>
+		<tr style="height: 100px;">
+			<td style="width: 50%; height: 100px;">
+				<p>Meter: 12345<br />2023-02-22 21:39:26<br />cons: 12345</p>
+				<table style="width: 100%; height: 37px;">
+					<tbody>
+						<tr>
+							<th>Sum</th>
+							<th>T1</th>
+							<th>T2</th>
+						</tr>
+						<tr>
+							<td>12345</td>
+							<td>12345</td>
+							<td>12345</td>
+						</tr>
+					</tbody>
+				</table>
+				<table style="width: 100%; height: 37px;">
+					<tbody>
+						<tr>
+							<th>V1</th>
+							<th>V2</th>
+							<th>V3</th>
+						</tr>
+						<tr>
+							<td>12345</td>
+							<td>12345</td>
+							<td>12345</td>
+						</tr>
+					</tbody>
+				</table>
+				<table style="width: 100%; height: 37px;">
+					<tbody>
+						<tr>
+							<th>A1</th>
+							<th>A2</th>
+							<th>A3</th>
+						</tr>
+						<tr>
+							<td>12345</td>
+							<td>12345</td>
+							<td>12345</td>
+						</tr>
+					</tbody>
+				</table>
+			</td>
+			<td style="width: 50%; height: 100px;">
+				<p>Meter: 12345<br />2023-02-22 21:39:26<br />cons: 12345</p>
+				<table style="width: 100%; height: 37px;">
+					<tbody>
+						<tr>
+							<th>Sum</th>
+							<th>T1</th>
+							<th>T2</th>
+						</tr>
+						<tr>
+							<td>12345</td>
+							<td>12345</td>
+							<td>12345</td>
+						</tr>
+					</tbody>
+				</table>
+				<table style="width: 100%; height: 37px;">
+					<tbody>
+						<tr>
+							<th>V1</th>
+							<th>V2</th>
+							<th>V3</th>
+						</tr>
+						<tr>
+							<td>12345</td>
+							<td>12345</td>
+							<td>12345</td>
+						</tr>
+					</tbody>
+				</table>
+				<table style="width: 100%; height: 37px;">
+					<tbody>
+						<tr>
+							<th>A1</th>
+							<th>A2</th>
+							<th>A3</th>
+						</tr>
+						<tr>
+							<td>12345</td>
+							<td>12345</td>
+							<td>12345</td>
+						</tr>
+					</tbody>
+				</table>
+			</td>
+		</tr>
+		<tr style="height: 100px;">
+			<td style="width: 50%; height: 100px;">
+				<p>Meter: 12345<br />2023-02-22 21:39:26<br />cons: 12345</p>
+				<table style="width: 100%; height: 37px;">
+					<tbody>
+						<tr>
+							<th>Sum</th>
+							<th>T1</th>
+							<th>T2</th>
+						</tr>
+						<tr>
+							<td>12345</td>
+							<td>12345</td>
+							<td>12345</td>
+						</tr>
+					</tbody>
+				</table>
+				<table style="width: 100%; height: 37px;">
+					<tbody>
+						<tr>
+							<th>V1</th>
+							<th>V2</th>
+							<th>V3</th>
+						</tr>
+						<tr>
+							<td>12345</td>
+							<td>12345</td>
+							<td>12345</td>
+						</tr>
+					</tbody>
+				</table>
+				<table style="width: 100%; height: 37px;">
+					<tbody>
+						<tr>
+							<th>A1</th>
+							<th>A2</th>
+							<th>A3</th>
+						</tr>
+						<tr>
+							<td>12345</td>
+							<td>12345</td>
+							<td>12345</td>
+						</tr>
+					</tbody>
+				</table>
+			</td>
+			<td style="width: 50%; height: 100px;">
+				<p>Meter: 12345<br />2023-02-22 21:39:26<br />cons: 12345</p>
+				<table style="width: 100%; height: 37px;">
+					<tbody>
+						<tr>
+							<th>Sum</th>
+							<th>T1</th>
+							<th>T2</th>
+						</tr>
+						<tr>
+							<td>12345</td>
+							<td>12345</td>
+							<td>12345</td>
+						</tr>
+					</tbody>
+				</table>
+				<table style="width: 100%; height: 37px;">
+					<tbody>
+						<tr>
+							<th>V1</th>
+							<th>V2</th>
+							<th>V3</th>
+						</tr>
+						<tr>
+							<td>12345</td>
+							<td>12345</td>
+							<td>12345</td>
+						</tr>
+					</tbody>
+				</table>
+				<table style="width: 100%; height: 37px;">
+					<tbody>
+						<tr>
+							<th>A1</th>
+							<th>A2</th>
+							<th>A3</th>
+						</tr>
+						<tr>
+							<td>12345</td>
+							<td>12345</td>
+							<td>12345</td>
+						</tr>
+					</tbody>
+				</table>
+			</td>
+		</tr>
+	</tbody>
+</table>
+<table class="table_1_class"; style ="width:100%;">
+	<tbody>
+			<tr>
+				<td style="width: 33.9544%;">2023-02-22 21:39:26</td>
+				<td style="width: 21.5321%;">12345-05:00</td>
+				<td style="width: 44.5134%;">XXXXXXXXXXXXXXXX XXXXXXXXXXX</td>
+			</tr>
+			<tr>
+				<td style="width: 33.9544%;">2023-02-22 21:39:26</td>
+				<td style="width: 21.5321%;">12345-05:00</td>
+				<td style="width: 44.5134%;">XXXXXXXXXXXXXXXX XXXXXXXXXXX</td>
+			</tr>
+		</tbody>
+</table>
+<p><a href="config">configure page</a></p>
+*/
 
 void wifiConnected()
 {
