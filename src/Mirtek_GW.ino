@@ -2,7 +2,9 @@
 //MQTT topics: "mirtek/Request_Status", "mirtek/action"
 //#define MY_CC1101
 // https://github.com/1technophile/OpenMQTTGateway/issues/329
-
+// my cc1101 pinout   vcc-gd00-csn-sck-mosi-gd01-gd02-gnd
+// esp8266 wemos mini 3.3v-D1--D8--D5--D7---D6---D2---gnd
+ 
 #include <math.h>
 #include <MQTT.h>
 #include <SPI.h>
@@ -16,6 +18,17 @@
 #define MY_DEBUG
 #ifdef  MY_DEBUG
 #define DEBUG_LOG(msg, ...) DebugLog(msg, ##__VA_ARGS__)
+
+enum State {
+  DateTime = 0,
+  SumT1T2,
+  ConsVoltAmp,
+  Wait
+} RequestState;
+
+int RequestMeterIdx;
+int RequestAttempt;
+
 void DebugLog(const char* msg, ...)
 {
     char buff[256];
@@ -38,7 +51,9 @@ void DebugPktLog(byte* pkt, unsigned pktLen )
     #define DEBUG_PKTLOG(pkt, pktLen)
 #endif
 
-unsigned tmr_tele_time=30*1000; //раз в 10 cек запрашиваем и отправляем информацию в mqtt
+
+unsigned tmr_tele_time=30*1000; //раз в 30 cек опрашиваем cчетчики и отправляем информацию в mqtt
+
 //#include <cc1101_debug_service.h>
 
 #ifdef MY_CC1101
@@ -153,9 +168,20 @@ byte rfSettings[] = {
 #define MAX_METERS 4
 struct {
     unsigned MeterAdress;
+    unsigned DomoticzTextIdx;
     unsigned DomoticzP1Idx;
     unsigned DomoticzAmpersIdx;
     unsigned DomoticzVoltsIdx;
+//TIME:  22:29:38
+    unsigned  hour;
+    unsigned  min;
+    unsigned  sec;
+
+//DATE:  2.7.2024
+    unsigned  day;
+    unsigned  month;
+    unsigned  year; 
+
     float sum;
     float t1; 
     float t2;
@@ -186,7 +212,7 @@ byte transmitt_byte[] = {0x10, 0x73, 0x55, 0x21, 0x00, 0, 0, 0x09, 0xff, 0, 0, 0
 byte resultbuffer[61] = { 0 }; //буфер конечного, сшитого принятого пакета
 unsigned bytecount = 0; //указатель байтов в результирующем буфере
 
-TimerMs tmr(2000, 0, 0); //инициализируем таймер ожидания ответа счетчика
+TimerMs tmr(1000, 0, 0);               //инициализируем таймер ожидания ответа счетчика
 TimerMs tmr_tele(tmr_tele_time, 0, 0); //инициализируем таймер, отправляющий значения в MQTT
 
 // -- Initial name of the Thing. Used e.g. as SSID of the own Access Point.
@@ -371,23 +397,24 @@ bool iotWebConfInit(){
     return validConfig;
 }
 
-void packetSender(byte tr[])  //функция отправки пакета
+void packetSend(byte tr[], int tc)  //функция отправки пакета
 {
     ELECHOUSE_cc1101.SpiStrobe(0x33);  //Calibrate frequency synthesizer and turn it off
-    delay(5);
+//    delay(10);
     ELECHOUSE_cc1101.SpiStrobe(0x3B);  // Flush the TX FIFO buffer
     ELECHOUSE_cc1101.SpiStrobe(0x36);  // Exit RX / TX, turn off frequency synthesizer and exit
     ELECHOUSE_cc1101.SpiWriteReg(0x3e, 0xC4); //выставляем мощность 10dB
-    DEBUG_LOG("Packet sent:  %d", *tr);
+    DEBUG_LOG("Packet %d sent", tc);
+//    DEBUG_LOG("Packet %d sent: %d", tc, *tr);
+    delay(10);
     ELECHOUSE_cc1101.SendData(tr, tr[0] + 1); //отправляем пакет
     ELECHOUSE_cc1101.SpiStrobe(0x3A);  // Flush the RX FIFO buffer
     ELECHOUSE_cc1101.SpiStrobe(0x34);  // Enable RX
-    
-    DEBUG_PKTLOG(tr, tr[0] + 1);
+//    DEBUG_PKTLOG(tr, tr[0] + 1);
 }
 
 // Request Type: 0x20, PacketLen: 0x0F
-int RequestPacket1(byte tr[], unsigned addr, byte code) {
+int CreateRequestPacket1(byte tr[], unsigned addr, byte code) {
     DEBUG_LOG("RequestPacket1: Addr: %d Code: %X", addr, code);
 	
 //    tr[0] = 0x0F; // длина пакета 16 байт
@@ -413,12 +440,12 @@ int RequestPacket1(byte tr[], unsigned addr, byte code) {
     }
     tr[14] = crc.getCRC(); //CRC
 //    tr[15] = 0x55; //конец payload
-    packetSender(tr);   //отправляем пакет
+//    packetSend(tr);   //отправляем пакет
     return 3;
 }
 
 // Request Type: 0x21, PacketLen: 0x10
-int RequestPacket2(byte tr[], unsigned addr ,byte code, byte type) {
+int CreateRequestPacket2(byte tr[], unsigned addr ,byte code, byte type) {
     DEBUG_LOG("RequestPacket2: Addr: %d Code: %X Type: %X", addr, code, type);
 //    tr[0] = 0x10; //длина пакета 17 байт
 //    tr[1] = 0x73; // const: 
@@ -444,35 +471,44 @@ int RequestPacket2(byte tr[], unsigned addr ,byte code, byte type) {
     }
     tr[15] = crc.getCRC(); //CRC
 //    tr[16] = 0x55; //конец payload
-    packetSender(tr);   //отправляем пакет
+//    packetSend(tr);   //отправляем пакет
     return 4;
 }
 
 // функция приёма пакета (помещает его в resultbuffer[])
 // packetType кол-во подпакетов в ответе - зависит от типа запроса (3 для запросов 1-4, 4 для запросов 5,6)
-bool packetReceiver(int packetType) {
+bool packetReceive(int packetType) {
 
     tmr.start();
-    bytecount = 0;       // указатель байтов в результирующем буфере
+    bytecount = 0;       // количество байтов в результирующем буфере (resultbuffer)
+    byte result[61];
+    unsigned resultBytes = 0; 
 
-    int PackCount = 0;   // счётчик принятых из трансивера
-    byte buffer[4][61];  // массив буфферов пакетов, принятых из трансивера
-    
+    int PackCount = 0;   // счётчик принятых пакетов
+    byte buffer[4][61];  // массив буфферов пакетов
+    int rssi = 0; 
     while (!tmr.tick() && PackCount < packetType && PackCount < 4) {
-        delay(5);
+        delay(1);
         if (ELECHOUSE_cc1101.CheckReceiveFlag()) {
-            /*
+            
             //Rssi Level in dBm
-            Serial.print("Rssi: ");
-            Serial.println(ELECHOUSE_cc1101.getRssi());
+            //Serial.print("Rssi: ");
+            //Serial.println(ELECHOUSE_cc1101.getRssi());
+            rssi += ELECHOUSE_cc1101.getRssi();
 
             //Link Quality Indicator
-            Serial.print("LQI: ");
-            Serial.println(ELECHOUSE_cc1101.getLqi());
-            */
+            //Serial.print("LQI: ");
+            //Serial.println(ELECHOUSE_cc1101.getLqi());
+            
 
             ELECHOUSE_cc1101.ReceiveData(buffer[PackCount]);
-            delay(1);
+            
+            if( buffer[PackCount][0] > 60) {
+                DEBUG_LOG("Packet %d, Income Buffer Len: %d", PackCount, buffer[PackCount][0]);
+                DEBUG_PKTLOG(buffer[PackCount], buffer[PackCount][0] + 1);
+                return false;
+            }
+    //        delay(5);
             ELECHOUSE_cc1101.SpiStrobe(0x36);  // Exit RX / TX, turn off frequency synthesizer and exit
             ELECHOUSE_cc1101.SpiStrobe(0x3A);  // Flush the RX FIFO buffer
             ELECHOUSE_cc1101.SpiStrobe(0x3B);  // Flush the TX FIFO buffer
@@ -480,29 +516,39 @@ bool packetReceiver(int packetType) {
             PackCount++;
         }
     }
+    if(PackCount == 0) {
+        // no packets received
+        DEBUG_LOG("ERROR: PackCount: 0");
+        return false;
+    }
 
     for(int p = 0; p < PackCount; p++ ){
-       //подшиваем пакеты в общий пакет
-        for (int i = 1; i <= buffer[p][0] && bytecount < sizeof(resultbuffer); i++) {
+        //подшиваем пакеты в общий пакет; buffer[p][0] - size of received packet 
+        for (int i = 1; i <= buffer[p][0] && resultBytes < sizeof(result); i++) {
             byte b = buffer[p][i];
             if(b == 0x73 ){
                 if(buffer[p][i+1] == 0x11){
-                    resultbuffer[bytecount++] = 0x55;
+                    result[resultBytes++] = 0x55;
                     i++;
                     continue;
                 }
                 if(buffer[p][i+1] == 0x22){
-                    resultbuffer[bytecount++] = 0x73;
+                    result[resultBytes++] = 0x73;
                     i++;
                     continue;
                 }
+                if(buffer[p][i+1] != 0x55){
+                    DEBUG_LOG("NEW ESCAPE:0x73 %X", buffer[p][i+1]);
+                }
             }
-            resultbuffer[bytecount++] = b;
+            result[resultBytes++] = b;
         }
     }
 
-    if(bytecount < 4)
-         return false;
+    if(resultBytes < 4) {
+        DEBUG_LOG("ERROR: PackCount: %d Result Bytes: %d", PackCount, resultBytes);
+        return false;
+    }
 
     // Test CRC ------------------------------
 #if 0
@@ -510,42 +556,44 @@ bool packetReceiver(int packetType) {
         crc.reset();
         crc.setPolynome(0xA9);
         bool find = false;
-        for (unsigned i = 2; i < (bytecount - 2); i++){
-//            if(resultbuffer[i] == 0x73 && resultbuffer[i+1] == 0x11) {
-            if(resultbuffer[i] == 0x73 && resultbuffer[i+1] == 0x22) {
+        for (unsigned i = 2; i < (resultBytes - 2); i++){
+//            if(result[i] == 0x73 && result[i+1] == 0x11) { // escape 0x73 0x11
+            if(result[i] == 0x73 && result[i+1] == 0x22) { // escape 0x73 0x22  
                 find = true;
                 crc.add(j);
                 i++;
             }
             else{
-                crc.add(resultbuffer[i]);
+                crc.add(result[i]);
             }
         }
         uint8_t myCRC = crc.getCRC();
-        if(find == true && resultbuffer[bytecount - 2] == myCRC){
+        if(find == true && result[resultBytes - 2] == myCRC){
             DEBUG_LOG("CRC!!!!: %X ", j);
         }
     }
 #else
         crc.reset();
         crc.setPolynome(0xA9);
-        for (unsigned i = 2; i < (bytecount - 2); i++){
-             crc.add(resultbuffer[i]);
+        for (unsigned i = 2; i < (resultBytes - 2); i++){
+             crc.add(result[i]);
         }
 #endif
 
     uint8_t myCRC = crc.getCRC();
-    if(resultbuffer[bytecount - 2] == myCRC){
+    if(result[resultBytes - 2] == myCRC){
+        bytecount = resultBytes;
+        for(unsigned i = 0; i < resultBytes; i++) {
+           resultbuffer[i] = result[i];
+        }
+        DEBUG_LOG("CRC OK: Rssi: %d PackCount: %d Packet length: %d", rssi/PackCount, PackCount, resultBytes);
+       
         return true;
     }
     else {
-        DEBUG_LOG("R_CRC: %X C_CRC: %X", resultbuffer[bytecount - 2], myCRC);
-        DEBUG_LOG("PackCount: %d Packet length: %d", PackCount, bytecount);
-        for(int p = 0; p < PackCount; p++ ){
-            DEBUG_LOG("Buffer Len: %d", buffer[p][0]);
-            DEBUG_PKTLOG(buffer[p], buffer[p][0] + 1);
-        }
-        DEBUG_PKTLOG(resultbuffer,bytecount);
+        DEBUG_LOG("ERROR: R_CRC: %X C_CRC: %X", result[resultBytes - 2], myCRC);
+        DEBUG_LOG("ERROR: PackCount: %d Packet length: %d", PackCount, resultBytes);
+        DEBUG_PKTLOG(result, resultBytes);
         return false;
     }
 }
@@ -554,8 +602,22 @@ bool packetReceiver(int packetType) {
 bool parse_current_state(unsigned meterIdx) 
 { 
   bool ret = true;
-  if ( (bytecount == 45) and (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[8]==0x2B) and (resultbuffer[12]==0x0) and (resultbuffer[44]==0x55))
-  {
+//  if ( (bytecount == 45) and (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[8]==0x2B) and (resultbuffer[12]==0x0) and (resultbuffer[44]==0x55)){
+//     Serial.println("PARSING ERROR! parse_current_state");
+//  }
+
+    if(bytecount != 45) {DEBUG_LOG("parse_current_state: bytecount != 45: %d",bytecount); ret = false;}
+    if(resultbuffer[0]!=0x73) {Serial.println("parse_current_state: resultbuffer[0]!=0x73");ret = false;}
+    if(resultbuffer[1]!=0x55) {Serial.println("parse_current_state: resultbuffer[1]!=0x55");ret = false;}
+    if(resultbuffer[2]!=0x1E) {Serial.println("parse_current_state: resultbuffer[2]!=0x1E" );ret = false;}
+//    if(resultbuffer[8]!=0x05) {Serial.println("parse_current_state: resultbuffer[8]!=0x2B");ret = false;}
+//    if(resultbuffer[17]!=0x1) {Serial.println("parse_current_state: resultbuffer[12]!=0x0");ret = false;}
+    if(resultbuffer[44]!=0x55) {Serial.println("parse_current_state: resultbuffer[44]!=0x55");ret = false;}
+   
+    if (ret == false) {
+        return ret;
+    }
+    
     Serial.print("Active:  ");
 	Serial.print(resultbuffer[20], HEX); Serial.print(resultbuffer[19], HEX); Serial.print(resultbuffer[18], HEX); Serial.print("  ");
     float cons = float((resultbuffer[18] | (resultbuffer[19] << 8) | (resultbuffer[20] << 16))); //watts
@@ -565,20 +627,20 @@ bool parse_current_state(unsigned meterIdx)
 	meter[meterIdx].cons = cons;
     Serial.println(cons);
 
-    Serial.print("Reactive:  ");
+    Serial.print("Reactive: ");
 	Serial.print(resultbuffer[23], HEX); Serial.print(resultbuffer[22], HEX); Serial.print(resultbuffer[21], HEX); Serial.print("  ");
     Serial.println(float((resultbuffer[21] | (resultbuffer[22] << 8) | (resultbuffer[23] << 16) )));
 
-    Serial.print("Freq:  ");
+    Serial.print("Freq: ");
     float freq = float((resultbuffer[24] | (resultbuffer[25] << 8)))/100;
 	if(freq > 51 || freq < 49)
 		ret = false;
 	Serial.println(freq);
 			
-    Serial.print("Cos:  ");
+    Serial.print("Cos: ");
     Serial.println(float((resultbuffer[26] | (resultbuffer[27] << 8))) / 1000);
 
-    Serial.print("V1:  ");
+    Serial.print("V1: ");
     float v1 = float((resultbuffer[28] | (resultbuffer[29] << 8))) / 100;
     if(v1 > 400)
 		ret = false;
@@ -587,7 +649,7 @@ bool parse_current_state(unsigned meterIdx)
 	Serial.print(resultbuffer[29], HEX); Serial.print(resultbuffer[28], HEX); Serial.print("  ");
     Serial.println(v1);
 
-    Serial.print("V2:  ");
+    Serial.print("V2: ");
     float v2 = float((resultbuffer[30] | (resultbuffer[31] << 8))) / 100;
     if(v2 > 400)
 		ret = false;
@@ -626,10 +688,6 @@ bool parse_current_state(unsigned meterIdx)
 	meter[meterIdx].a3 = a3;
 	Serial.print(resultbuffer[42], HEX); Serial.print(resultbuffer[41], HEX); Serial.print(resultbuffer[40], HEX); Serial.print("  ");
     Serial.println(a3);
-  }else{
-	ret = false;
-    Serial.println("PARSING ERROR!");
-  }
   return ret;
 }
 
@@ -645,44 +703,93 @@ bool parse_current_state(unsigned meterIdx)
 // 7 - R2
 // 8 - R3
 // 9 - R4
-void parse_sum_t1_t2(unsigned meterIdx) {
-  if ( (bytecount == 45) and (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[8]==0x05)  and (resultbuffer[17]==0x1) and (resultbuffer[44]==0x55) )
-  {
+bool parse_sum_t1_t2(unsigned meterIdx) {
+  //if ( (bytecount == 45) and (resultbuffer[0]==0x73) and (resultbuffer[1]==0x55) and (resultbuffer[2]==0x1E) and (resultbuffer[8]==0x05) and (resultbuffer[17]==0x1) and (resultbuffer[44]==0x55) ){
+    bool ret = true;
+        if(bytecount != 45) {DEBUG_LOG("parse_sum_t1_t2: bytecount != 45: %d",bytecount); ret = false;}
+        if(resultbuffer[0]!=0x73) {Serial.println("parse_sum_t1_t2: resultbuffer[0]!=0x73");ret = false;}
+        if(resultbuffer[1]!=0x55) {Serial.println("parse_sum_t1_t2: resultbuffer[1]!=0x55");ret = false;}
+        if(resultbuffer[2]!=0x1E) {Serial.println("parse_sum_t1_t2: resultbuffer[2]!=0x1E");ret = false;}
+    //    if(resultbuffer[8]!=0x05) {Serial.println("parse_sum_t1_t2: resultbuffer[8]!=0x05");ret = false;}
+    //    if(resultbuffer[17]!=0x1) {Serial.println("parse_sum_t1_t2: resultbuffer[17]!=0x1");ret = false;}
+        if(resultbuffer[44]!=0x55) {Serial.println("parse_sum_t1_t2: resultbuffer[44]!=0x55");ret = false;}
+    //}
+
+    if (ret == false)
+        return ret;
+
     Serial.print("SUM:  ");
 	Serial.print(resultbuffer[26], HEX); Serial.print(resultbuffer[25], HEX); Serial.print(resultbuffer[24], HEX); Serial.print(resultbuffer[23], HEX); Serial.print("  ");
-    float sum = float((resultbuffer[25] << 16) | (resultbuffer[24] << 8) | resultbuffer[23]) * 10;
+    float sum = float((resultbuffer[26] << 24) | (resultbuffer[25] << 16) | (resultbuffer[24] << 8) | resultbuffer[23]) * 10;
     meter[meterIdx].sum = sum;
 	Serial.println(sum / 1000);
 
     Serial.print("T1:  ");
-    float t1 = float((resultbuffer[29] << 16) | (resultbuffer[28] << 8) | resultbuffer[27]) * 10;
+    float t1 = float((resultbuffer[30] << 24) | (resultbuffer[29] << 16) | (resultbuffer[28] << 8) | resultbuffer[27]) * 10;
 	Serial.print(resultbuffer[30], HEX); Serial.print(resultbuffer[29], HEX); Serial.print(resultbuffer[28], HEX); Serial.print(resultbuffer[27], HEX); Serial.print("  ");
     meter[meterIdx].t1  = t1;
     Serial.println(t1 / 1000);
 
     Serial.print("T2:  ");
-    float t2 = float((resultbuffer[33] << 16) | (resultbuffer[32] << 8) | resultbuffer[31]) * 10;
+    float t2 = float((resultbuffer[34] << 24) | (resultbuffer[33] << 16) | (resultbuffer[32] << 8) | resultbuffer[31]) * 10;
 	Serial.print(resultbuffer[34], HEX); Serial.print(resultbuffer[33], HEX); Serial.print(resultbuffer[32], HEX); Serial.print(resultbuffer[31], HEX); Serial.print("  ");
     meter[meterIdx].t2  = t2;
     Serial.println(t2 / 1000);   
-  }else{
-    Serial.println("PARSING ERROR!");
-  }
+    return ret;
 }
 
-void parse_date_time() {
-  //73 55 7 0 9 FF E9 99 1C A8 3 5B 0 29 4 0 1 1F A 16 79 55 
-  if ( (bytecount == 22) )
-  {
-    Serial.print("TIME:  ");
+bool parse_date_time(unsigned meterIdx) {
+  //73 55 7 0 9 FF E9 99 1C A8 3 5B 0 29 4 0 1 1F A 16 79 55
+// TIME
+//    unsigned  hour;
+//    unsigned  min;
+//    unsigned  sec;
+
+//DATE:  2.7.2024
+//    unsigned  day;
+//    unsigned  month;
+//    unsigned  year;
+    bool ret = true;
+
+    if ( bytecount != 22 ){Serial.println("parse_date_time: bytecount != 22"); ret = false;}
+    if(resultbuffer[0]!=0x73) {Serial.println("parse_date_time: resultbuffer[0]!=0x73");ret = false;}
+    if(resultbuffer[1]!=0x55) {Serial.println("parse_date_time: resultbuffer[1]!=0x55");ret = false;}
+    if(resultbuffer[21]!=0x55) {Serial.println("parse_date_time: resultbuffer[44]!=0x55");ret = false;}
+    if(ret == false)
+        return ret;
+
+    Serial.print("TIME: ");
 	Serial.print(resultbuffer[13], HEX); Serial.print(resultbuffer[14], HEX); Serial.print(resultbuffer[15], HEX); Serial.print("  ");
 	Serial.print(resultbuffer[15]); Serial.print(":"); Serial.print(resultbuffer[14]); Serial.print(":"); Serial.println(resultbuffer[13]);
+    meter[meterIdx].hour = resultbuffer[15];
+    meter[meterIdx].min  = resultbuffer[14];
+    meter[meterIdx].sec  = resultbuffer[13];
+
 
     Serial.print("DATE:  ");
 	Serial.print(resultbuffer[19], HEX); Serial.print(resultbuffer[18], HEX); Serial.print(resultbuffer[17], HEX); Serial.print("  ");
  	Serial.print(resultbuffer[17]); Serial.print("."); Serial.print(resultbuffer[18]); Serial.print(".20"); Serial.println(resultbuffer[19]);
-   }else{
-    Serial.println("PARSING ERROR!");
+
+    meter[meterIdx].day   = resultbuffer[17];
+    meter[meterIdx].month = resultbuffer[18];
+    meter[meterIdx].year  = resultbuffer[19];
+    return ret;
+}
+
+// TODO domoticzTextPublish
+void domoticzTextPublish(unsigned meterIdx ){
+    if(meter[meterIdx].t1 > 0 && meter[meterIdx].t2 > 0 && meter[meterIdx].cons > 0 ){
+        char buffer[128];
+        char t1_chr[FLOATSZ];
+        char t2_chr[FLOATSZ];
+        
+        dtostrf(meter[meterIdx].t1, -FLOATSZ, 1, t1_chr);
+        dtostrf(meter[meterIdx].t2, -FLOATSZ, 1, t2_chr);
+ 
+        snprintf(buffer,sizeof(buffer),"{\"idx\":%d, \"nvalue\":0, \"svalue\":\"%s;%s; 0.0;0.0; %d;0\"}",
+            meter[meterIdx].DomoticzTextIdx, t1_chr, t2_chr, unsigned(meter[meterIdx].cons) );
+        Serial.print("Domotics: "); Serial.println(buffer);
+        mqttClient.publish("domoticz/in", buffer);
   }
 }
 
@@ -745,50 +852,125 @@ void domoticzVoltsPublish(unsigned meterIdx ){
   }
 }
 
-void requestMeters(void) {
+void domoticzPublish(int mIdx){
+    DEBUG_LOG("domoticzPublish: mqttClient.connected %d", mqttClient.connected());
+    if (mqttClient.connected() == false ){
+        connectMqtt();
+    }
+    if(meter[mIdx].DomoticzP1Idx != 0 && mqttClient.connected() ){
+        domoticzP1Publish(mIdx);
+    }
+    if(meter[mIdx].DomoticzAmpersIdx != 0 && mqttClient.connected() ){
+        domoticzAmpersPublish(mIdx);
+    }
+    if(meter[mIdx].DomoticzVoltsIdx != 0 && mqttClient.connected() ){
+        domoticzVoltsPublish(mIdx);
+    }
+}
+
+void requestMeters(int mIdx, State state) {
+    int tryCount = 1;
     for(int i = 0; i < MAX_METERS; i++) {
         Serial.print("MeterAdress: "); Serial.println(meter[i].MeterAdress);
         if(meter[i].MeterAdress != 0){
             int packetType;
             // date time
-            packetType = RequestPacket1(transmitt_byte1, meter[i].MeterAdress, 0x1C);
-            if(packetReceiver(packetType)){
-                parse_date_time();
+            DEBUG_LOG("RequestPacket: date time");
+            packetType = CreateRequestPacket1(transmitt_byte1, meter[i].MeterAdress, 0x1C);
+            for(int tc = 0; tc < tryCount; tc++) { 
+                packetSend(transmitt_byte1, tc);   //отправляем пакет
+                if(packetReceive(packetType)){
+                    parse_date_time(i);
+                    break;
+                }
+                delay(100);
             }
+
             // T1, T2
-            packetType = RequestPacket2(transmitt_byte, meter[i].MeterAdress, 0x05, 0); 
-            if(packetReceiver(packetType)){
-                parse_sum_t1_t2(i);
+            DEBUG_LOG("RequestPacket: T1, T2");
+            packetType = CreateRequestPacket2(transmitt_byte, meter[i].MeterAdress, 0x05, 0); 
+            for(int tc = 0 ; tc < tryCount; tc++) { 
+                packetSend(transmitt_byte, tc);   //отправляем пакет
+                if(packetReceive(packetType)){
+                    parse_sum_t1_t2(i);
+                    break;
+                }
+                delay(100);
             }
           
             // Consume Active Energy, Volts, Ampers
-            packetType = RequestPacket2(transmitt_byte, meter[i].MeterAdress, 0x2b, 0); 
-            if(packetReceiver(packetType)){
-                if(parse_current_state(i)){
-					if(meter[i].DomoticzP1Idx != 0 && mqttClient.connected() ){
-						domoticzP1Publish(i);
-						meter[i].t1 = -1;
-						meter[i].t2 = -1;
-						meter[i].cons = -1;
-					}
-					if(meter[i].DomoticzAmpersIdx != 0 && mqttClient.connected() ){
-						domoticzAmpersPublish(i);
-						meter[i].a1 = -1;
-						meter[i].a2 = -1;
-						meter[i].a3 = -1;
-					}
-					if(meter[i].DomoticzVoltsIdx != 0 && mqttClient.connected() ){
-						domoticzVoltsPublish(i);
-						meter[i].v1 = -1;
-						meter[i].v2 = -1;
-						meter[i].v3 = -1;
-					}
-				}
+            DEBUG_LOG("RequestPacket: Consume Active Energy, Volts, Ampers");
+            packetType = CreateRequestPacket2(transmitt_byte, meter[i].MeterAdress, 0x2b, 0); 
+            for(int tc = 0; tc < tryCount; tc++) { 
+                packetSend(transmitt_byte, tc);   //отправляем пакет
+                if(packetReceive(packetType)){
+                    if(parse_current_state(i)){
+                        DEBUG_LOG("domoticzPublish0: mqttClient.connected %d", mqttClient.connected());
+                        if (mqttClient.connected() == false ){
+                            connectMqtt();
+                        }
+                        if(meter[i].DomoticzP1Idx != 0 && mqttClient.connected() ){
+                            domoticzP1Publish(i);
+                            meter[i].t1 = -1;
+                            meter[i].t2 = -1;
+                            meter[i].cons = -1;
+                        }
+                        if(meter[i].DomoticzAmpersIdx != 0 && mqttClient.connected() ){
+                            domoticzAmpersPublish(i);
+                            meter[i].a1 = -1;
+                            meter[i].a2 = -1;
+                            meter[i].a3 = -1;
+                        }
+                        if(meter[i].DomoticzVoltsIdx != 0 && mqttClient.connected() ){
+                            domoticzVoltsPublish(i);
+                            meter[i].v1 = -1;
+                            meter[i].v2 = -1;
+                            meter[i].v3 = -1;
+                        }
+                    }
+                    DEBUG_LOG("domoticzPublish1: mqttClient.connected %d", mqttClient.connected());
+                    break;
+                }
+                delay(100);
             }
-
         }
     }
 }
+
+bool requestMetersEx(int mIdx, State state) {
+    int packetType;
+    switch(state){
+        case DateTime:
+            DEBUG_LOG("RequestPacket: date time");
+            packetType = CreateRequestPacket1(transmitt_byte1, meter[mIdx].MeterAdress, 0x1C);
+            packetSend(transmitt_byte1, 0);
+            if(packetReceive(packetType)){
+                return parse_date_time(mIdx);
+            }
+            return false;
+        case SumT1T2:
+            DEBUG_LOG("RequestPacket: T1, T2");
+            packetType = CreateRequestPacket2(transmitt_byte, meter[mIdx].MeterAdress, 0x05, 0); 
+            packetSend(transmitt_byte, 0);
+            if(packetReceive(packetType)){
+                return parse_sum_t1_t2(mIdx);
+            }
+            return false;
+        case ConsVoltAmp:
+            // Consume Active Energy, Volts, Ampers
+            DEBUG_LOG("RequestPacket: Consume Active Energy, Volts, Ampers");
+            packetType = CreateRequestPacket2(transmitt_byte, meter[mIdx].MeterAdress, 0x2b, 0); 
+            packetSend(transmitt_byte, 0);
+            if(packetReceive(packetType)){
+                return parse_current_state(mIdx);
+            }
+            return false;
+        default:
+            DEBUG_LOG("RequestPacket: Wait");
+            return true;
+    }
+}
+
 
 void setup() {
     Serial.begin(115200);
@@ -864,7 +1046,6 @@ void setup() {
         meter[1].DomoticzVoltsIdx = atoi(DomoticzVoltsIdxValue2);
         meter[2].DomoticzVoltsIdx = atoi(DomoticzVoltsIdxValue3);
         meter[3].DomoticzVoltsIdx = atoi(DomoticzVoltsIdxValue4);
-        //requestMeters();
     }
     else {
         unsigned s = ELECHOUSE_cc1101.SpiReadStatus(0x31);
@@ -874,6 +1055,56 @@ void setup() {
     //Serial.println("Rx Mode");
     tmr_tele.setTime(atoi(telePeriodValue) * 1000);
     tmr_tele.start(); //старт таймера MQTT
+}
+
+#define MAX_ATTEMPT 3
+
+void processRequest(State nextState){
+    DEBUG_LOG("------>processRequest: MeterIdx %d RequestState: %d RequestAttempt: %d", RequestMeterIdx, RequestState, RequestAttempt);
+
+    if( meter[RequestMeterIdx].MeterAdress == 0){
+        RequestMeterIdx++;
+        if (RequestMeterIdx == MAX_METERS) {
+            RequestState = Wait; // Wait next loop
+            RequestMeterIdx = 0;
+            RequestAttempt = 0;
+            DEBUG_LOG("<----->processRequest: MAX_METERS 1");
+        }
+        else {
+            RequestState = DateTime; // start net meter with DateTime
+            RequestAttempt = 0;
+        }
+    }
+    else { 
+        if( requestMetersEx(RequestMeterIdx, RequestState)){ // receive valid data, switch to next state
+            RequestState = nextState;
+            if(RequestState == Wait){
+                domoticzPublish(RequestMeterIdx);
+                RequestMeterIdx++;
+                if (RequestMeterIdx == MAX_METERS) {
+                    RequestMeterIdx = 0;
+                    DEBUG_LOG("<----->processRequest: MAX_METERS 2");
+                }
+            }
+            RequestAttempt = 0; 
+        } 
+        else {
+            RequestAttempt++;
+            if(RequestAttempt == MAX_ATTEMPT){ // meter error after MAX_ATTEMPT
+                RequestMeterIdx++;
+                RequestAttempt = 0;
+                if (RequestMeterIdx == MAX_METERS) {
+                    RequestState = Wait; // Wait next loop
+                    RequestMeterIdx = 0;
+                    DEBUG_LOG("<----->processRequest: MAX_METERS 3");
+                } 
+                else{
+                    RequestState = DateTime; // start net meter with DateTime
+                }
+            }
+        }
+    }
+    DEBUG_LOG("<------processRequest: MeterIdx %d RequestState: %d RequestAttempt: %d", RequestMeterIdx, RequestState, RequestAttempt);
 }
 
 void loop() {
@@ -893,21 +1124,42 @@ void loop() {
                 needMqttConnect = false;
             }
         }
-        else if ((iotWebConf.getState() == iotwebconf::OnLine) && (!mqttClient.connected())) {
-            Serial.println("MQTT reconnect");
+        else if (iotWebConf.getState() == iotwebconf::OnLine && mqttClient.connected() == false) {
+            DEBUG_LOG("MQTT reconnect: connected %d", mqttClient.connected());
             connectMqtt();
         }
     }
+    
+    if ((cc1101_is_ready == true) && (iotWebConf.getState() == iotwebconf::OnLine) ){
 
-  if ((cc1101_is_ready == true) && (iotWebConf.getState() == iotwebconf::OnLine) ){
-    if (tmr_tele.tick()) // Запрос информации по таймеру
-      {
-        Serial.println("--------------------->Request MIRTEK by timer");
-        requestMeters();
-        Serial.println("<---------------------Request MIRTEK by timer");Serial.println("");
-      }
+#if 1    
+        switch (RequestState)
+        {
+        case DateTime:
+            processRequest(SumT1T2);
+            break;
+        case SumT1T2:
+            processRequest(ConsVoltAmp);
+            break;
+        case ConsVoltAmp:
+            processRequest(Wait);
+            break;
+        case Wait:
+            if (tmr_tele.tick()) {
+                RequestState = DateTime;
+            }
+            break;
+        default:
+            break;
+        }
+#else
+        if (tmr_tele.tick()){ // Запрос информации по таймеру
+            Serial.println("----->Request MIRTEK by timer");
+            requestMeters(0, RequestState);
+            Serial.println("<-----Request MIRTEK by timer");Serial.println("");
+        }
+#endif
     }
-    //delay(2000);
 }
 
 void handleRoot()
@@ -918,6 +1170,126 @@ void handleRoot()
         // -- Captive portal request were already served.
         return;
     }
+
+#if 1
+//TODO use partial page sending 
+//https://htmled.it/redaktor/
+//  https://stackoverflow.com/questions/57242057/sending-large-amounts-of-data-from-an-esp8266-server
+
+   server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+   server.sendHeader("Pragma", "no-cache");
+   server.sendHeader("Expires", "-1");
+   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+   server.send(200, "text/html", "");
+
+    String s = "<!DOCTYPE html><html lang=\"en\">";
+	s += "<head>";
+	s += "<meta charset=\"utf-8\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/>";
+    s += "<title>Mirtek-to-MQTT</title>";
+    s += "<style type=\"text/css\">";
+    s += "p {font-weight:bold;}";
+ 	s += "table {border:1px;width:300px;border-collapse:collapse;border-style:solid;background:white;color:black;}";
+    s += "tr:nth-child(odd) {background-color:#D6EEEE;height:20px;}";
+    s += "td {text-align:center;height:12px;}";
+    s += "</style>";
+	s += "</head>";
+    server.sendContent(s);
+
+	s = "<body>MirtekGateway";
+
+    s += "<ul>";
+    s += "<li>MQTT server: ";
+    s += mqttServerValue;
+    s += "</ul>";
+ //   s += "<form action=\"config\"><button>Configure gateway</button></form>";
+    s += "<button onclick=\"document.location='config'\">Configure gateway</button>";
+ 
+    server.sendContent(s);
+/*
+struct {
+    unsigned MeterAdress;
+    unsigned DomoticzTextIdx;
+    unsigned DomoticzP1Idx;
+    unsigned DomoticzAmpersIdx;
+    unsigned DomoticzVoltsIdx;
+//TIME:  22:29:38
+    unsigned  hour;
+    unsigned  min;
+    unsigned  sec;
+
+//DATE:  2.7.2024
+    unsigned  day;
+    unsigned  month;
+    unsigned  year; 
+
+    float sum;
+    float t1; 
+    float t2;
+	float a1;
+	float a2;
+	float a3;
+	float v1;
+	float v2;
+	float v3;
+    float cons;
+} meter[MAX_METERS];
+*/
+
+    for(int mIdx=0; mIdx < 4 ; mIdx++ ){
+        char buffer[128];
+        if( meter[mIdx].MeterAdress == 0) {
+            continue;
+        }
+
+//     "<p>Meter: 12345<br />2023-02-22 21:39:26<br />cons: 12345</p>"
+        char chr1[FLOATSZ];
+        char chr2[FLOATSZ];
+        char chr3[FLOATSZ];
+        dtostrf(meter[mIdx].cons, -FLOATSZ, 0, chr1);
+        snprintf(buffer,sizeof(buffer),"<p>Meter address: %u Date: 20%u-%u-%u Time:%u:%u:%u<br/>Power consumption: %sW</p>",
+            meter[mIdx].MeterAdress, meter[mIdx].year,meter[mIdx].month,meter[mIdx].day,meter[mIdx].hour,meter[mIdx].min,meter[mIdx].sec, chr1 );
+        server.sendContent(buffer);
+        s = "<table>";
+        server.sendContent(s);
+
+        s = "<tr><td><strong>Sum</strong></td><td><strong>T1</strong></td><td><strong>T2</strong></td></tr>";
+        server.sendContent(s);
+//        "<tr><td>123</td><td>234</td><td>345</td></tr>"
+        dtostrf(meter[mIdx].sum/1000, -FLOATSZ, 0, chr1);
+        dtostrf(meter[mIdx].t1/1000, -FLOATSZ, 0, chr2);
+        dtostrf(meter[mIdx].t2/1000, -FLOATSZ, 0, chr3);
+    
+        snprintf(buffer,sizeof(buffer),"<tr><td>%s</td><td>%s</td><td>%s</td></tr>",
+            chr1, chr2, chr3);
+        server.sendContent(buffer);
+
+
+        s = "<tr><td><strong>V1</strong></td><td><strong>V2</strong></td><td><strong>V3</strong></td></tr>";
+        server.sendContent(s);
+//      "<tr><td>123</td><td>234</td><td>345</td></tr>";
+        dtostrf(meter[mIdx].v1, -FLOATSZ, 0, chr1);
+        dtostrf(meter[mIdx].v2, -FLOATSZ, 0, chr2);
+        dtostrf(meter[mIdx].v3, -FLOATSZ, 0, chr3);
+
+        snprintf(buffer,sizeof(buffer),"<tr><td>%s</td><td>%s</td><td>%s</td></tr>",
+            chr1,chr2,chr3);
+        server.sendContent(buffer);
+
+        s = "<tr><td><strong>A1</strong></td><td><strong>A1</strong></td><td><strong>A3</strong></td></tr>";
+        server.sendContent(s);
+
+        dtostrf(meter[mIdx].a1, -FLOATSZ, 2, chr1);
+        dtostrf(meter[mIdx].a2, -FLOATSZ, 2, chr2);
+        dtostrf(meter[mIdx].a3, -FLOATSZ, 2, chr3);
+//      "<tr><td>123</td><td>234</td><td>345</td></tr>";
+        snprintf(buffer,sizeof(buffer),"<tr><td>%s</td><td>%s</td><td>%s</td></tr>",
+            chr1,chr2,chr3);
+        server.sendContent(buffer);
+        server.sendContent("</table>");
+    }
+    server.sendContent("</body></html>\n");
+
+#else
     String s = "<!DOCTYPE html><html lang=\"en\">";
 	s += "<head>";
 	s += "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/>";
@@ -932,285 +1304,9 @@ void handleRoot()
     s += "</body></html>\n";
 
     server.send(200, "text/html", s);
+#endif 
+
 }
-/*
-https://htmled.it/redaktor/
-class htmlPage
-{
-	private:
-		String s;
-	public:
-		addTable(); //<table xxx> [tbody]</table>
-		addTableBody(); //<tbody>[tr] </tbody> 
-		addTableRow();  // <tr xxx>[td]...[td] </tr>
-		addTableData(); <td xxx>data</td>
-}
-createPage()
-{
-	addTable();
-}
-
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Article</title>
-</head>
- <style>
- table{width:50%}
-.one, .two{width:75%; border:0px}
-.one{border-spacing:40px; padding:10px; text-align:center}
-.two{border-spacing:0px; padding:75px; text-align:left}
-</style>
-<body>
-    <table style="border:2px solid blue">
-        <tr>
-            <td class="one">Lorem ipsum</td>
-            <td class="one">Lorem ipsum</td>
-        </tr>
-    </table>
-    <table style="border:2px solid red">
-        <tr>
-            <td class="two">Lorem ipsum</td>
-            <td class="two">Lorem ipsum</td>
-        </tr>
-    </table>
-</body>
-<html>
-
-
-
-<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/>
-<head>
-	<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/>
-    <title>Mirtek-to-MQTT</title>
-	<style type="text/css">
-		.table_1_class td { text-align: left; color:red;}
-		TABLE {
-			border: 1px;
-			border-collapse: collapse;
-			border-style: solid;
-			background: white; 
-			color: black; 
-		}
-		TH {
-			background: white;
-			text-align: center;
-			height: 15px;
-			width: 33.3333%;			
-		}
-		TD {
-			background: white;
-			text-align: center;
-			height: 15px;
-			width: 33.3333%;			
-		}
-	</style>
-</head>
-<table style="border-style: solid; height: 200px; width: 100%; ">
-	<tbody>
-		<tr style="height: 100px;">
-			<td style="width: 50%; height: 100px;">
-				<p>Meter: 12345<br />2023-02-22 21:39:26<br />cons: 12345</p>
-				<table style="width: 100%; height: 37px;">
-					<tbody>
-						<tr>
-							<th>Sum</th>
-							<th>T1</th>
-							<th>T2</th>
-						</tr>
-						<tr>
-							<td>12345</td>
-							<td>12345</td>
-							<td>12345</td>
-						</tr>
-					</tbody>
-				</table>
-				<table style="width: 100%; height: 37px;">
-					<tbody>
-						<tr>
-							<th>V1</th>
-							<th>V2</th>
-							<th>V3</th>
-						</tr>
-						<tr>
-							<td>12345</td>
-							<td>12345</td>
-							<td>12345</td>
-						</tr>
-					</tbody>
-				</table>
-				<table style="width: 100%; height: 37px;">
-					<tbody>
-						<tr>
-							<th>A1</th>
-							<th>A2</th>
-							<th>A3</th>
-						</tr>
-						<tr>
-							<td>12345</td>
-							<td>12345</td>
-							<td>12345</td>
-						</tr>
-					</tbody>
-				</table>
-			</td>
-			<td style="width: 50%; height: 100px;">
-				<p>Meter: 12345<br />2023-02-22 21:39:26<br />cons: 12345</p>
-				<table style="width: 100%; height: 37px;">
-					<tbody>
-						<tr>
-							<th>Sum</th>
-							<th>T1</th>
-							<th>T2</th>
-						</tr>
-						<tr>
-							<td>12345</td>
-							<td>12345</td>
-							<td>12345</td>
-						</tr>
-					</tbody>
-				</table>
-				<table style="width: 100%; height: 37px;">
-					<tbody>
-						<tr>
-							<th>V1</th>
-							<th>V2</th>
-							<th>V3</th>
-						</tr>
-						<tr>
-							<td>12345</td>
-							<td>12345</td>
-							<td>12345</td>
-						</tr>
-					</tbody>
-				</table>
-				<table style="width: 100%; height: 37px;">
-					<tbody>
-						<tr>
-							<th>A1</th>
-							<th>A2</th>
-							<th>A3</th>
-						</tr>
-						<tr>
-							<td>12345</td>
-							<td>12345</td>
-							<td>12345</td>
-						</tr>
-					</tbody>
-				</table>
-			</td>
-		</tr>
-		<tr style="height: 100px;">
-			<td style="width: 50%; height: 100px;">
-				<p>Meter: 12345<br />2023-02-22 21:39:26<br />cons: 12345</p>
-				<table style="width: 100%; height: 37px;">
-					<tbody>
-						<tr>
-							<th>Sum</th>
-							<th>T1</th>
-							<th>T2</th>
-						</tr>
-						<tr>
-							<td>12345</td>
-							<td>12345</td>
-							<td>12345</td>
-						</tr>
-					</tbody>
-				</table>
-				<table style="width: 100%; height: 37px;">
-					<tbody>
-						<tr>
-							<th>V1</th>
-							<th>V2</th>
-							<th>V3</th>
-						</tr>
-						<tr>
-							<td>12345</td>
-							<td>12345</td>
-							<td>12345</td>
-						</tr>
-					</tbody>
-				</table>
-				<table style="width: 100%; height: 37px;">
-					<tbody>
-						<tr>
-							<th>A1</th>
-							<th>A2</th>
-							<th>A3</th>
-						</tr>
-						<tr>
-							<td>12345</td>
-							<td>12345</td>
-							<td>12345</td>
-						</tr>
-					</tbody>
-				</table>
-			</td>
-			<td style="width: 50%; height: 100px;">
-				<p>Meter: 12345<br />2023-02-22 21:39:26<br />cons: 12345</p>
-				<table style="width: 100%; height: 37px;">
-					<tbody>
-						<tr>
-							<th>Sum</th>
-							<th>T1</th>
-							<th>T2</th>
-						</tr>
-						<tr>
-							<td>12345</td>
-							<td>12345</td>
-							<td>12345</td>
-						</tr>
-					</tbody>
-				</table>
-				<table style="width: 100%; height: 37px;">
-					<tbody>
-						<tr>
-							<th>V1</th>
-							<th>V2</th>
-							<th>V3</th>
-						</tr>
-						<tr>
-							<td>12345</td>
-							<td>12345</td>
-							<td>12345</td>
-						</tr>
-					</tbody>
-				</table>
-				<table style="width: 100%; height: 37px;">
-					<tbody>
-						<tr>
-							<th>A1</th>
-							<th>A2</th>
-							<th>A3</th>
-						</tr>
-						<tr>
-							<td>12345</td>
-							<td>12345</td>
-							<td>12345</td>
-						</tr>
-					</tbody>
-				</table>
-			</td>
-		</tr>
-	</tbody>
-</table>
-<table class="table_1_class"; style ="width:100%;">
-	<tbody>
-			<tr>
-				<td style="width: 33.9544%;">2023-02-22 21:39:26</td>
-				<td style="width: 21.5321%;">12345-05:00</td>
-				<td style="width: 44.5134%;">XXXXXXXXXXXXXXXX XXXXXXXXXXX</td>
-			</tr>
-			<tr>
-				<td style="width: 33.9544%;">2023-02-22 21:39:26</td>
-				<td style="width: 21.5321%;">12345-05:00</td>
-				<td style="width: 44.5134%;">XXXXXXXXXXXXXXXX XXXXXXXXXXX</td>
-			</tr>
-		</tbody>
-</table>
-<p><a href="config">configure page</a></p>
-*/
 
 void wifiConnected()
 {
@@ -1238,27 +1334,6 @@ bool formValidator(iotwebconf::WebRequestWrapper* webRequestWrapper)
     return valid;
 }
 
-bool connectMqtt() {
-    unsigned long now = millis();
-    if (1000 > now - lastMqttConnectionAttempt)
-    {
-        // Do not repeat within 1 sec.
-        return false;
-    }
-    DEBUG_LOG("Connecting to MQTT server...");
-    //Serial.println("Connecting to MQTT server...");
-    
-    if (!connectMqttOptions()) {
-        lastMqttConnectionAttempt = now;
-        return false;
-    }
-    DEBUG_LOG("MQTT Connected!");
-    //Serial.println("MQTT Connected!");
-
-    mqttClient.subscribe("mirtek/action");
-    return true;
-}
-
 bool connectMqttOptions()
 {
     bool result;
@@ -1275,4 +1350,24 @@ bool connectMqttOptions()
         result = mqttClient.connect(iotWebConf.getThingName());
     }
     return result;
+}
+
+bool connectMqtt() {
+    unsigned long now = millis();
+    if (1000 > now - lastMqttConnectionAttempt)
+    {
+        // Do not repeat within 1 sec.
+        return false;
+    }
+    DEBUG_LOG("Connecting to MQTT server...");
+    //Serial.println("Connecting to MQTT server...");
+    
+    if (!connectMqttOptions()) {
+        lastMqttConnectionAttempt = now;
+        return false;
+    }
+    mqttClient.subscribe("mirtek/action");
+ 
+    DEBUG_LOG("MQTT Connected!");
+    return true;
 }
